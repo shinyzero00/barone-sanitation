@@ -1,11 +1,14 @@
 package backend
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
+	"math/big"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -40,6 +43,23 @@ func checkPassword(encoded, password string) bool {
 	}
 	actual := argon2.IDKey([]byte(password), salt, 3, 64*1024, 2, 32)
 	return subtle.ConstantTimeCompare(actual, key) == 1
+}
+
+func newCode() (string, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(1000000))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%06d", n.Int64()), nil
+}
+
+func codeHash(secret []byte, requestID int64, code string) []byte {
+	mac := hmac.New(sha256.New, secret)
+	var id [8]byte
+	binary.BigEndian.PutUint64(id[:], uint64(requestID))
+	mac.Write(id[:])
+	mac.Write([]byte(code))
+	return mac.Sum(nil)
 }
 
 func newToken() (string, error) {

@@ -113,7 +113,7 @@ func TestHTTPCSRFAndOrigin(t *testing.T) {
 	if httpValidCSRF(bytes.Repeat([]byte{8}, 32), csrf.Value) {
 		t.Fatal("cross-secret CSRF accepted")
 	}
-	for _, path := range []string{"auth/register", "auth/login", "auth/logout"} {
+	for _, path := range []string{"auth/register", "auth/codes", "auth/verify-email", "auth/login", "auth/login/verify", "auth/reset-password", "auth/logout", "bookings", "admin/consultants"} {
 		t.Run(path, func(t *testing.T) {
 			request := httpUnsafeRequest("POST", "/api/v1/"+path, "{}", nil)
 			httpDo(t, app, request, 403)
@@ -124,7 +124,7 @@ func TestHTTPCSRFAndOrigin(t *testing.T) {
 func TestHTTPStrictJSON(t *testing.T) {
 	app := fiber.New(fiber.Config{BodyLimit: httpBodyLimit, ErrorHandler: httpError})
 	app.Post("/", func(c fiber.Ctx) error {
-		var in RegisterInput
+		var in CodeInput
 		if err := httpDecode(c, &in); err != nil {
 			return err
 		}
@@ -134,12 +134,12 @@ func TestHTTPStrictJSON(t *testing.T) {
 		name, body, contentType string
 		status                  int
 	}{
-		{"valid", `{"email":"a@example.com","password":"a password here"}`, "application/json", 200},
+		{"valid", `{"email":"a@example.com","code":"123456"}`, "application/json", 200},
 		{"charset", `{}`, "application/json; charset=utf-8", 200},
 		{"unknown", `{"user_id":1}`, "application/json", 400},
-		{"role override", `{"role":"admin"}`, "application/json", 400},
+		{"purpose override", `{"purpose":"login"}`, "application/json", 400},
 		{"malformed", `{"email":`, "application/json", 400},
-		{"wrong type", `{"password":123456}`, "application/json", 400},
+		{"wrong type", `{"code":123456}`, "application/json", 400},
 		{"multiple objects", `{} {}`, "application/json", 400},
 		{"trailing null", `{} null`, "application/json", 400},
 		{"trailing garbage", `{} x`, "application/json", 400},
@@ -252,10 +252,11 @@ func TestHTTPCookies(t *testing.T) {
 	app := fiber.New()
 	app.Get("/", func(c fiber.Ctx) error {
 		httpSetCookie(c, sessionCookie, "opaque", time.Hour, true)
+		httpSetCookie(c, challengeCookie, "", -time.Second, true)
 		return c.SendStatus(204)
 	})
 	response := httpDo(t, app, httptest.NewRequest("GET", "/", nil), 204)
-	if len(response.Cookies()) != 1 {
+	if len(response.Cookies()) != 2 {
 		t.Fatal("missing cookies")
 	}
 	for _, cookie := range response.Cookies() {
@@ -265,5 +266,21 @@ func TestHTTPCookies(t *testing.T) {
 		if cookie.Name == sessionCookie && cookie.MaxAge != 3600 {
 			t.Fatal("incorrect session TTL")
 		}
+		if cookie.Name == challengeCookie && (cookie.MaxAge >= 0 || cookie.Expires.After(time.Now())) {
+			t.Fatal("challenge not cleared")
+		}
+	}
+}
+
+func TestHTTPPositiveIDs(t *testing.T) {
+	for _, raw := range []string{"", "0", "-1", "+1", "1.0", " 1", "1x", "9223372036854775808"} {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := httpPositiveID(raw); err == nil {
+				t.Fatal("invalid ID accepted")
+			}
+		})
+	}
+	if id, err := httpPositiveID("9223372036854775807"); err != nil || id != 9223372036854775807 {
+		t.Fatal("valid int64 rejected")
 	}
 }

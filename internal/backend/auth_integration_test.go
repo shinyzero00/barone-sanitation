@@ -5,13 +5,11 @@ package backend
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,7 +19,34 @@ import (
 	"github.com/shinyzero00/barone-sanitation/internal/migrations"
 )
 
-func authFixture(t *testing.T) *Service {
+type authRecordingMailer struct {
+	mu    sync.Mutex
+	codes map[string]string
+	fail  bool
+	hook  func()
+}
+
+func (m *authRecordingMailer) SendCode(_ context.Context, email, _, code string) error {
+	m.mu.Lock()
+	m.codes[email] = code
+	fail, hook := m.fail, m.hook
+	m.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	if fail {
+		return errors.New("test SMTP failure")
+	}
+	return nil
+}
+
+func (m *authRecordingMailer) Code(email string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.codes[email]
+}
+
+func authFixture(t *testing.T) (*Service, *authRecordingMailer) {
 	t.Helper()
 	url := os.Getenv("DATABASE_TEST_URL")
 	if url == "" {
@@ -55,14 +80,68 @@ func authFixture(t *testing.T) *Service {
 	if err = migrations.Run(t.Context(), db.DB, false); err != nil {
 		t.Fatal(err)
 	}
-	return &Service{DB: db, Config: Config{
-		PublicOrigin: httpTestOrigin, HMACSecret: bytes.Repeat([]byte{42}, 32), SessionTTL: time.Hour,
+	m := &authRecordingMailer{codes: make(map[string]string)}
+	s := &Service{DB: db, Mailer: m, Config: Config{
+		HMACSecret: bytes.Repeat([]byte{42}, 32), CodeTTL: 10 * time.Minute, MaxAttempts: 5,
+		ResendInterval: time.Minute, Lockout: 15 * time.Minute, SessionTTL: time.Hour,
 		RequestTimeout: 5 * time.Second, RateWindow: time.Minute, RateLimit: 1000,
 	}}
+	return s, m
 }
 
 const authTestPassword = "correct horse battery staple"
 const authTestIP = "192.0.2.1"
+
+func TestAuthParallelLoginAndSessionExpiry(t *testing.T) {
+	s, m := authFixture(t)
+	email := "parallel-login@example.com"
+	authRegister(t, s, email)
+	if err := s.VerifyEmail(t.Context(), CodeInput{Email: email, Code: m.Code(email)}); err != nil {
+		t.Fatal(err)
+	}
+	challenge, err := s.StartLogin(t.Context(), email, authTestPassword, authTestIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := CodeInput{Email: email, Code: m.Code(email)}
+	start := make(chan struct{})
+	tokens := make(chan string, 2)
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			token, err := s.FinishLogin(t.Context(), in, challenge)
+			tokens <- token
+			errs <- err
+		}()
+	}
+	close(start)
+	var token string
+	for range 2 {
+		if candidate := <-tokens; candidate != "" {
+			if token != "" {
+				t.Fatal("OTP created two sessions")
+			}
+			token = candidate
+		}
+		if err := <-errs; err != nil {
+			authWantStatus(t, err, 401)
+		}
+	}
+	actor, err := s.Authenticate(t.Context(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := s.DB.GetContext(t.Context(), &count, `SELECT count(*) FROM sessions`); err != nil || count != 1 {
+		t.Fatalf("session count = %d, error = %v", count, err)
+	}
+	if _, err := s.DB.ExecContext(t.Context(), `UPDATE sessions SET created_at=clock_timestamp()-interval '2 hours',expires_at=clock_timestamp()-interval '1 hour' WHERE session_id=$1`, actor.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Authenticate(t.Context(), token)
+	authWantStatus(t, err, 401)
+}
 
 func authRegister(t *testing.T, s *Service, email string) int64 {
 	t.Helper()
@@ -81,166 +160,458 @@ func authWantStatus(t *testing.T, err error, status int) {
 	}
 }
 
-func TestAuthPasswordLoginAndSessions(t *testing.T) {
-	s := authFixture(t)
-	id := authRegister(t, s, " Test@Example.COM ")
-	_, err := s.Register(t.Context(), RegisterInput{Name: "Other", Email: "TEST@example.com", Password: authTestPassword, Phone: "123"}, authTestIP)
-	authWantStatus(t, err, 409)
-	for _, email := range []string{"test@example.com", "unknown@example.com"} {
-		_, err := s.Login(t.Context(), email, "incorrect password", authTestIP)
-		authWantStatus(t, err, 401)
+func authAllowResend(t *testing.T, s *Service, email, purpose string) {
+	t.Helper()
+	_, err := s.DB.ExecContext(t.Context(), `UPDATE verification_codes SET regenerate_available_at=clock_timestamp()-interval '1 second' WHERE user_id=(SELECT user_id FROM users WHERE email=$1) AND purpose=$2`, email, purpose)
+	if err != nil {
+		t.Fatal(err)
 	}
-	var count int
-	if err := s.DB.GetContext(t.Context(), &count, `SELECT count(*) FROM sessions`); err != nil || count != 0 {
-		t.Fatalf("invalid login created sessions: count=%d err=%v", count, err)
+}
+
+func authLogin(t *testing.T, s *Service, m *authRecordingMailer, email string) string {
+	t.Helper()
+	challenge, err := s.StartLogin(t.Context(), email, authTestPassword, authTestIP)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, action := range []string{"logout", "expire"} {
-		t.Run(action, func(t *testing.T) {
-			token, err := s.Login(t.Context(), "TEST@example.com", authTestPassword, authTestIP)
-			if err != nil {
-				t.Fatal(err)
+	token, err := s.FinishLogin(t.Context(), CodeInput{Email: email, Code: m.Code(email)}, challenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+func TestAuthRegistrationAndParallelUse(t *testing.T) {
+	s, m := authFixture(t)
+	email := "client@example.com"
+	id := authRegister(t, s, " Client@Example.COM ")
+	var role, hash string
+	if err := s.DB.QueryRowxContext(t.Context(), `SELECT role,password_hash FROM users JOIN clients USING(user_id) WHERE user_id=$1`, id).Scan(&role, &hash); err != nil {
+		t.Fatal(err)
+	}
+	if role != "client" || !checkPassword(hash, authTestPassword) {
+		t.Fatal("registration contract violated")
+	}
+	if _, err := s.StartLogin(t.Context(), email, authTestPassword, authTestIP); err == nil {
+		t.Fatal("unverified login accepted")
+	}
+	in := CodeInput{Email: email, Code: m.Code(email)}
+	var successes atomic.Int32
+	errs := make(chan error, 8)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			err := s.VerifyEmail(t.Context(), in)
+			if err == nil {
+				successes.Add(1)
 			}
-			actor, err := s.Authenticate(t.Context(), token)
-			if err != nil || actor.UserID != id || actor.Role != "client" {
-				t.Fatalf("actor=%+v err=%v", actor, err)
-			}
-			profile, err := s.GetProfile(t.Context(), actor)
-			if err != nil || profile.Email != "test@example.com" || profile.Phone != "+1 202 555 0100" || profile.Name != "Test Client" {
-				t.Fatalf("profile=%+v err=%v", profile, err)
-			}
-			var digest []byte
-			if err := s.DB.GetContext(t.Context(), &digest, `SELECT token_hash FROM sessions WHERE session_id=$1`, actor.SessionID); err != nil || !bytes.Equal(digest, tokenHash(token)) {
-				t.Fatalf("session digest=%x err=%v", digest, err)
-			}
-			if action == "logout" {
-				if err := s.Logout(t.Context(), actor); err != nil {
-					t.Fatal(err)
-				}
-			} else if _, err := s.DB.ExecContext(t.Context(), `UPDATE sessions SET created_at=clock_timestamp()-interval '2 hours',expires_at=clock_timestamp()-interval '1 hour' WHERE session_id=$1`, actor.SessionID); err != nil {
-				t.Fatal(err)
-			}
-			_, err = s.Authenticate(t.Context(), token)
-			authWantStatus(t, err, 401)
+			errs <- err
 		})
 	}
+	wg.Wait()
+	close(errs)
+	if successes.Load() != 1 {
+		t.Fatalf("successful OTP uses = %d", successes.Load())
+	}
+	for err := range errs {
+		if err != nil {
+			authWantStatus(t, err, 401)
+		}
+	}
+	token := authLogin(t, s, m, email)
+	actor, err := s.Authenticate(t.Context(), token)
+	if err != nil || actor.UserID != id || actor.Role != "client" {
+		t.Fatalf("authenticate: %+v %v", actor, err)
+	}
+	if err = s.Logout(t.Context(), actor); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Authenticate(t.Context(), token)
+	authWantStatus(t, err, 401)
 }
 
-func TestAuthLoginRevalidatesPasswordSnapshot(t *testing.T) {
-	s := authFixture(t)
-	id := authRegister(t, s, "snapshot@example.com")
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	tx, err := s.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
+func TestAuthAttemptsAndCooldown(t *testing.T) {
+	s, m := authFixture(t)
+	email := "attempts@example.com"
+	authRegister(t, s, email)
+	wrong := "000000"
+	if m.Code(email) == wrong {
+		wrong = "000001"
 	}
-	defer tx.Rollback()
-	var blocker int
-	if err := tx.GetContext(ctx, &blocker, `SELECT pg_backend_pid() FROM users WHERE user_id=$1 FOR UPDATE`, id); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := s.Login(ctx, "snapshot@example.com", authTestPassword, authTestIP)
-		done <- err
-	}()
-	// Observe the lock wait rather than assuming Argon2 finishes within a sleep.
-	for {
-		var waiting bool
-		if err := s.DB.GetContext(ctx, &waiting, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
-			WHERE $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'SELECT user_id,email,password_hash FROM users%')`, blocker); err != nil {
+	for i := 1; i <= 5; i++ {
+		err := s.VerifyEmail(t.Context(), CodeInput{Email: email, Code: wrong})
+		status := 401
+		if i == 5 {
+			status = 429
+		}
+		authWantStatus(t, err, status)
+		var attempts int
+		if err := s.DB.GetContext(t.Context(), &attempts, `SELECT failed_attempts FROM verification_codes`); err != nil {
 			t.Fatal(err)
 		}
-		if waiting {
-			break
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("login did not wait for the user lock: %v", err)
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		case <-time.After(10 * time.Millisecond):
+		if attempts != i {
+			t.Fatalf("attempts = %d, want %d", attempts, i)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE users SET password_hash='changed snapshot' WHERE user_id=$1`, id); err != nil {
+	var before, after time.Time
+	if err := s.DB.GetContext(t.Context(), &before, `SELECT regenerate_available_at FROM verification_codes`); err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Commit(); err != nil {
+	if time.Until(before) < 14*time.Minute {
+		t.Fatal("lockout too short")
+	}
+	authWantStatus(t, s.VerifyEmail(t.Context(), CodeInput{Email: email, Code: m.Code(email)}), 429)
+	authWantStatus(t, s.RequestCode(t.Context(), email, "verify_email", authTestIP), 429)
+	if err := s.DB.GetContext(t.Context(), &after, `SELECT regenerate_available_at FROM verification_codes`); err != nil {
 		t.Fatal(err)
 	}
-	authWantStatus(t, <-done, 401)
-	var count int
-	if err := s.DB.GetContext(ctx, &count, `SELECT count(*) FROM sessions`); err != nil || count != 0 {
-		t.Fatalf("stale password created sessions: count=%d err=%v", count, err)
+	if !before.Equal(after) {
+		t.Fatal("blocked attempts extended lockout")
 	}
-}
-
-func TestAuthSharedRateLimit(t *testing.T) {
-	s := authFixture(t)
-	s.Config.RateLimit = 1
-	other := &Service{DB: s.DB, Config: s.Config}
-	if err := s.RateLimit(t.Context(), authTestIP, "login"); err != nil {
+	authAllowResend(t, s, email, "verify_email")
+	if err := s.RequestCode(t.Context(), email, "verify_email", authTestIP); err != nil {
 		t.Fatal(err)
 	}
-	authWantStatus(t, other.RateLimit(t.Context(), authTestIP, "login"), 429)
-	if err := other.RateLimit(t.Context(), "192.0.2.2", "login"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.DB.ExecContext(t.Context(), `UPDATE ip_rate_limits SET window_started_at=clock_timestamp()-interval '2 minutes'`); err != nil {
-		t.Fatal(err)
-	}
-	if err := other.RateLimit(t.Context(), authTestIP, "login"); err != nil {
+	if err := s.VerifyEmail(t.Context(), CodeInput{Email: email, Code: m.Code(email)}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestHTTPPasswordSession(t *testing.T) {
-	s := authFixture(t)
-	app := NewApp(s)
-	csrf := httpCSRFTestCookie(t, app)
-	httpDo(t, app, httpUnsafeRequest("POST", "/api/v1/auth/register", `{"name":"Test Client","email":"Test@example.com","password":"correct horse battery staple","phone":"123","role":"admin"}`, csrf), 400)
-	httpDo(t, app, httpUnsafeRequest("POST", "/api/v1/auth/register", `{"name":"Test Client","email":"Test@example.com","password":"correct horse battery staple","phone":"123"}`, csrf), 201)
-	httpDo(t, app, httpUnsafeRequest("POST", "/api/v1/auth/login", `{"email":"test@example.com","password":"wrong password"}`, csrf), 401)
-	response := httpDo(t, app, httpUnsafeRequest("POST", "/api/v1/auth/login", `{"email":"test@example.com","password":"correct horse battery staple"}`, csrf), 204)
-	body, err := io.ReadAll(response.Body)
-	if err != nil || len(body) != 0 {
-		t.Fatalf("login body=%s err=%v", body, err)
+func TestAuthResendVersusFifthAttempt(t *testing.T) {
+	s, m := authFixture(t)
+	verifier := *s
+	verifier.Config.HMACSecret = bytes.Repeat([]byte{99}, 32)
+	email := "race@example.com"
+	authRegister(t, s, email)
+	wrong := "000000"
+	if m.Code(email) == wrong {
+		wrong = "000001"
 	}
-	var session *http.Cookie
-	for _, cookie := range response.Cookies() {
-		if cookie.Name == sessionCookie {
-			session = cookie
+	for range 4 {
+		authWantStatus(t, s.VerifyEmail(t.Context(), CodeInput{Email: email, Code: wrong}), 401)
+	}
+	authAllowResend(t, s, email, "verify_email")
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	// A different verifier secret guarantees a mismatch even if the new random code equals wrong.
+	go func() { <-start; errs <- verifier.VerifyEmail(t.Context(), CodeInput{Email: email, Code: wrong}) }()
+	go func() { <-start; errs <- s.RequestCode(t.Context(), email, "verify_email", authTestIP) }()
+	close(start)
+	for range 2 {
+		err := <-errs
+		if err != nil {
+			var api *APIError
+			if !errors.As(err, &api) || (api.Status != 401 && api.Status != 429) {
+				t.Fatal(err)
+			}
 		}
 	}
-	if session == nil || !validToken(session.Value) || !session.Secure || !session.HttpOnly || session.SameSite != http.SameSiteStrictMode || session.Path != "/" || session.Domain != "" || session.MaxAge != 3600 {
-		t.Fatalf("unsafe session cookie: %+v", session)
+	var count, attempts int
+	if err := s.DB.GetContext(t.Context(), &count, `SELECT count(*) FROM verification_codes`); err != nil {
+		t.Fatal(err)
 	}
-	httpDo(t, app, httptest.NewRequest("GET", "/api/v1/me", nil), 401)
-	request := httptest.NewRequest("GET", "/api/v1/me", nil)
-	request.AddCookie(session)
-	response = httpDo(t, app, request, 200)
-	var profile Profile
-	if err := json.NewDecoder(response.Body).Decode(&profile); err != nil || profile.Role != "client" || profile.Email != "test@example.com" {
-		t.Fatalf("profile=%+v err=%v", profile, err)
+	if err := s.DB.GetContext(t.Context(), &attempts, `SELECT failed_attempts FROM verification_codes ORDER BY verification_code_id DESC LIMIT 1`); err != nil {
+		t.Fatal(err)
 	}
-	request = httpUnsafeRequest("POST", "/api/v1/auth/logout", "", csrf)
-	request.AddCookie(session)
-	response = httpDo(t, app, request, 204)
-	if cookies := response.Cookies(); len(cookies) != 1 || cookies[0].Name != sessionCookie || cookies[0].MaxAge >= 0 || cookies[0].Expires.After(time.Now()) {
-		t.Fatalf("session not cleared: %+v", cookies)
+	if count == 1 && attempts != 5 {
+		t.Fatalf("fifth attempt lost: %d", attempts)
 	}
-	request = httptest.NewRequest("GET", "/api/v1/me", nil)
-	request.AddCookie(session)
-	httpDo(t, app, request, 401)
-	// Expiry is checked again on the next protected request, not cached in the app.
-	token, err := s.Login(t.Context(), "test@example.com", authTestPassword, authTestIP)
+	if count == 2 && attempts != 1 {
+		t.Fatalf("resend first must account for failed attempt: %d", attempts)
+	}
+	if count != 1 && count != 2 {
+		t.Fatalf("unexpected issuance count %d", count)
+	}
+}
+
+func TestAuthPurposeEmailChallengeAndLatestBinding(t *testing.T) {
+	s, m := authFixture(t)
+	a, b := "a@example.com", "b@example.com"
+	authRegister(t, s, a)
+	authRegister(t, s, b)
+	aCode := m.Code(a)
+	// Force distinct codes rather than relying on random codes never colliding.
+	if _, err := s.DB.ExecContext(t.Context(), `UPDATE verification_codes SET code_hash=$1 WHERE email=$2`, codeHash(s.Config.HMACSecret, 2, "999999"), b); err != nil {
+		t.Fatal(err)
+	}
+	if aCode == "999999" {
+		aCode = "999998"
+	}
+	authWantStatus(t, s.VerifyEmail(t.Context(), CodeInput{Email: b, Code: aCode}), 401)
+	authWantStatus(t, s.ResetPassword(t.Context(), CodeInput{Email: a, Code: m.Code(a)}, "a new secure password"), 401)
+	if err := s.VerifyEmail(t.Context(), CodeInput{Email: a, Code: m.Code(a)}); err != nil {
+		t.Fatal(err)
+	}
+	challenge, err := s.StartLogin(t.Context(), a, authTestPassword, authTestIP)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.ExecContext(t.Context(), `UPDATE sessions SET created_at=clock_timestamp()-interval '2 hours',expires_at=clock_timestamp()-interval '1 hour' WHERE token_hash=$1`, tokenHash(token)); err != nil {
+	loginCode := m.Code(a)
+	_, err = s.FinishLogin(t.Context(), CodeInput{Email: a, Code: loginCode}, "")
+	authWantStatus(t, err, 401)
+	other, err := newToken()
+	if err != nil {
 		t.Fatal(err)
 	}
-	request = httptest.NewRequest("GET", "/api/v1/me", nil)
-	request.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
-	httpDo(t, app, request, 401)
+	_, err = s.FinishLogin(t.Context(), CodeInput{Email: a, Code: loginCode}, other)
+	authWantStatus(t, err, 401)
+	authAllowResend(t, s, a, "login")
+	newChallenge, err := s.StartLogin(t.Context(), a, authTestPassword, authTestIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.FinishLogin(t.Context(), CodeInput{Email: a, Code: m.Code(a)}, challenge)
+	authWantStatus(t, err, 401)
+	if _, err = s.FinishLogin(t.Context(), CodeInput{Email: a, Code: m.Code(a)}, newChallenge); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAuthResetRevokesSessionsAndLoginChallenges(t *testing.T) {
+	s, m := authFixture(t)
+	email := "reset@example.com"
+	authRegister(t, s, email)
+	if err := s.VerifyEmail(t.Context(), CodeInput{Email: email, Code: m.Code(email)}); err != nil {
+		t.Fatal(err)
+	}
+	token := authLogin(t, s, m, email)
+	authAllowResend(t, s, email, "login")
+	challenge, err := s.StartLogin(t.Context(), email, authTestPassword, authTestIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginCode := m.Code(email)
+	if err = s.RequestCode(t.Context(), email, "reset_password", authTestIP); err != nil {
+		t.Fatal(err)
+	}
+	in := CodeInput{Email: email, Code: m.Code(email)}
+	if err = s.ResetPassword(t.Context(), in, "a different secure password"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Authenticate(t.Context(), token)
+	authWantStatus(t, err, 401)
+	_, err = s.FinishLogin(t.Context(), CodeInput{Email: email, Code: loginCode}, challenge)
+	authWantStatus(t, err, 401)
+	authWantStatus(t, s.ResetPassword(t.Context(), in, "another secure password"), 401)
+	_, err = s.StartLogin(t.Context(), email, authTestPassword, authTestIP)
+	authWantStatus(t, err, 401)
+	authAllowResend(t, s, email, "login")
+	if _, err = s.StartLogin(t.Context(), email, "a different secure password", authTestIP); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAuthResetVersusLoginCompletion(t *testing.T) {
+	s, m := authFixture(t)
+	email := "reset-race@example.com"
+	authRegister(t, s, email)
+	if err := s.VerifyEmail(t.Context(), CodeInput{Email: email, Code: m.Code(email)}); err != nil {
+		t.Fatal(err)
+	}
+	challenge, err := s.StartLogin(t.Context(), email, authTestPassword, authTestIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	login := CodeInput{Email: email, Code: m.Code(email)}
+	if err = s.RequestCode(t.Context(), email, "reset_password", authTestIP); err != nil {
+		t.Fatal(err)
+	}
+	reset := CodeInput{Email: email, Code: m.Code(email)}
+	start := make(chan struct{})
+	type loginResult struct {
+		token string
+		err   error
+	}
+	loginDone := make(chan loginResult, 1)
+	resetDone := make(chan error, 1)
+	go func() {
+		<-start
+		token, err := s.FinishLogin(t.Context(), login, challenge)
+		loginDone <- loginResult{token, err}
+	}()
+	go func() { <-start; resetDone <- s.ResetPassword(t.Context(), reset, "replacement secure password") }()
+	close(start)
+	result := <-loginDone
+	if err := <-resetDone; err != nil {
+		t.Fatal(err)
+	}
+	if result.err != nil {
+		authWantStatus(t, result.err, 401)
+	} else {
+		_, err := s.Authenticate(t.Context(), result.token)
+		authWantStatus(t, err, 401)
+	}
+	var active int
+	if err := s.DB.GetContext(t.Context(), &active, `SELECT count(*) FROM sessions WHERE revoked_at IS NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if active != 0 {
+		t.Fatal("login race escaped reset session revocation")
+	}
+}
+
+func TestAuthExpiryAndRevokedCodeCooldown(t *testing.T) {
+	s, m := authFixture(t)
+	email := "expiry@example.com"
+	authRegister(t, s, email)
+	in := CodeInput{Email: email, Code: m.Code(email)}
+	if _, err := s.DB.ExecContext(t.Context(), `UPDATE verification_codes SET created_at=clock_timestamp()-interval '20 minutes',expires_at=clock_timestamp()-interval '10 minutes'`); err != nil {
+		t.Fatal(err)
+	}
+	authWantStatus(t, s.VerifyEmail(t.Context(), in), 401)
+	authWantStatus(t, s.RequestCode(t.Context(), email, "verify_email", authTestIP), 429)
+	authAllowResend(t, s, email, "verify_email")
+	if err := s.RequestCode(t.Context(), email, "verify_email", authTestIP); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.VerifyEmail(t.Context(), CodeInput{Email: email, Code: m.Code(email)}); err != nil {
+		t.Fatal(err)
+	}
+	token := authLogin(t, s, m, email)
+	if _, err := s.DB.ExecContext(t.Context(), `UPDATE sessions SET created_at=clock_timestamp()-interval '2 hours',expires_at=clock_timestamp()-interval '1 hour'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.Authenticate(t.Context(), token)
+	authWantStatus(t, err, 401)
+}
+
+func TestAuthSMTPFailurePreservesCooldownAndUsedRace(t *testing.T) {
+	s, m := authFixture(t)
+	email := "smtp@example.com"
+	m.fail = true
+	_, err := s.Register(t.Context(), RegisterInput{Name: "Test", Email: email, Password: authTestPassword, Phone: "1234567890"}, authTestIP)
+	authWantStatus(t, err, 503)
+	var revoked bool
+	if err = s.DB.GetContext(t.Context(), &revoked, `SELECT revoked_at IS NOT NULL FROM verification_codes`); err != nil {
+		t.Fatal(err)
+	}
+	if !revoked {
+		t.Fatal("SMTP failure left usable code")
+	}
+	authWantStatus(t, s.RequestCode(t.Context(), email, "verify_email", authTestIP), 429)
+	authAllowResend(t, s, email, "verify_email")
+	m.hook = func() {
+		if err := s.VerifyEmail(t.Context(), CodeInput{Email: email, Code: m.Code(email)}); err != nil {
+			t.Error(err)
+		}
+	}
+	authWantStatus(t, s.RequestCode(t.Context(), email, "verify_email", authTestIP), 503)
+	var used, latestRevoked bool
+	if err = s.DB.QueryRowxContext(t.Context(), `SELECT used_at IS NOT NULL,revoked_at IS NOT NULL FROM verification_codes ORDER BY verification_code_id DESC LIMIT 1`).Scan(&used, &latestRevoked); err != nil {
+		t.Fatal(err)
+	}
+	if !used || latestRevoked {
+		t.Fatal("SMTP cleanup modified a successfully used code")
+	}
+}
+
+func TestAuthSMTPFailurePreservesFifthAttemptLockout(t *testing.T) {
+	s, m := authFixture(t)
+	email := "smtp-lockout@example.com"
+	authRegister(t, s, email)
+	authAllowResend(t, s, email, "verify_email")
+	m.fail = true
+	var lockedUntil time.Time
+	m.hook = func() {
+		wrong := "000000"
+		if m.Code(email) == wrong {
+			wrong = "000001"
+		}
+		for i := range 5 {
+			status := 401
+			if i == 4 {
+				status = 429
+			}
+			authWantStatus(t, s.VerifyEmail(t.Context(), CodeInput{Email: email, Code: wrong}), status)
+		}
+		if err := s.DB.GetContext(t.Context(), &lockedUntil, `SELECT regenerate_available_at FROM verification_codes ORDER BY verification_code_id DESC LIMIT 1`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	authWantStatus(t, s.RequestCode(t.Context(), email, "verify_email", authTestIP), 503)
+	var attempts int
+	var until time.Time
+	var revoked bool
+	if err := s.DB.QueryRowxContext(t.Context(), `SELECT failed_attempts,regenerate_available_at,revoked_at IS NOT NULL FROM verification_codes ORDER BY verification_code_id DESC LIMIT 1`).Scan(&attempts, &until, &revoked); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 5 || !revoked || !until.Equal(lockedUntil) || time.Until(until) < 14*time.Minute {
+		t.Fatal("SMTP cleanup changed fifth-attempt lockout")
+	}
+	authWantStatus(t, s.RequestCode(t.Context(), email, "verify_email", authTestIP), 429)
+}
+
+func TestAuthSMTPFailureDoesNotRevokeReplacement(t *testing.T) {
+	s, m := authFixture(t)
+	email := "smtp-replaced@example.com"
+	m.fail = true
+	m.hook = func() {
+		m.mu.Lock()
+		m.hook, m.fail = nil, false
+		m.mu.Unlock()
+		authAllowResend(t, s, email, "verify_email")
+		if err := s.RequestCode(t.Context(), email, "verify_email", authTestIP); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := s.Register(t.Context(), RegisterInput{Name: "Test", Email: email, Password: authTestPassword, Phone: "1234567890"}, authTestIP)
+	authWantStatus(t, err, 503)
+	if err := s.VerifyEmail(t.Context(), CodeInput{Email: email, Code: m.Code(email)}); err != nil {
+		t.Fatal("SMTP cleanup revoked replacement:", err)
+	}
+}
+
+func TestAuthNilMailerFailsClosed(t *testing.T) {
+	s, _ := authFixture(t)
+	s.Mailer = nil
+	_, err := s.Register(t.Context(), RegisterInput{Name: "Test", Email: "nil-mailer@example.com", Password: authTestPassword, Phone: "1234567890"}, authTestIP)
+	authWantStatus(t, err, 503)
+	var revoked bool
+	if err := s.DB.GetContext(t.Context(), &revoked, `SELECT revoked_at IS NOT NULL FROM verification_codes`); err != nil {
+		t.Fatal(err)
+	}
+	if !revoked {
+		t.Fatal("nil mailer left usable OTP")
+	}
+}
+
+func TestAuthDistributedRateLimitAndUnknownEmail(t *testing.T) {
+	s, _ := authFixture(t)
+	if err := s.RequestCode(t.Context(), "unknown@example.com", "reset_password", authTestIP); err != nil {
+		t.Fatal(err)
+	}
+	authWantStatus(t, s.RequestCode(t.Context(), "unknown@example.com", "login", authTestIP), 422)
+	s.Config.RateLimit = 3
+	other := &Service{DB: s.DB, Config: s.Config, Mailer: s.Mailer}
+	var successes atomic.Int32
+	errs := make(chan error, 12)
+	var wg sync.WaitGroup
+	for i := range 12 {
+		instance := s
+		if i%2 == 0 {
+			instance = other
+		}
+		wg.Go(func() {
+			err := instance.RateLimit(t.Context(), authTestIP, "shared")
+			if err == nil {
+				successes.Add(1)
+			}
+			errs <- err
+		})
+	}
+	wg.Wait()
+	close(errs)
+	if successes.Load() != 3 {
+		t.Fatalf("allowed %d requests", successes.Load())
+	}
+	for err := range errs {
+		if err != nil {
+			authWantStatus(t, err, 429)
+			var api *APIError
+			errors.As(err, &api)
+			if api.RetryAfter <= 0 {
+				t.Fatal("missing RetryAfter")
+			}
+		}
+	}
 }

@@ -23,9 +23,10 @@ import (
 )
 
 const (
-	httpBodyLimit = 16 * 1024
-	sessionCookie = "__Host-session"
-	csrfCookie    = "__Host-csrf"
+	httpBodyLimit   = 16 * 1024
+	sessionCookie   = "__Host-session"
+	challengeCookie = "__Host-login-challenge"
+	csrfCookie      = "__Host-csrf"
 )
 
 type httpLocal uint8
@@ -109,7 +110,7 @@ func NewApp(s *Service) *fiber.App {
 	app.Get("/csrf", csrf)
 	app.Get("/api/v1/auth/csrf", csrf)
 
-	// Every protected endpoint authenticates anew.
+	// Every protected endpoint authenticates anew; role/ownership checks remain in the service.
 	add := func(method, path string, protected bool, status int, fn func(fiber.Ctx) (any, error)) {
 		app.Add([]string{method}, "/api/v1"+path, func(c fiber.Ctx) error {
 			if protected {
@@ -119,8 +120,22 @@ func NewApp(s *Service) *fiber.App {
 				}
 				c.Locals(httpActorKey, actor)
 			}
-			if path == "/auth/logout" && len(c.Body()) > 0 {
+			for _, part := range strings.Split(path, "/") {
+				if strings.HasPrefix(part, ":") {
+					id, err := httpPositiveID(c.Params(part[1:]))
+					if err != nil {
+						return err
+					}
+					c.Locals(part, id)
+				}
+			}
+			if (method == "DELETE" || path == "/auth/logout") && len(c.Body()) > 0 {
 				if err := httpDecode(c, &struct{}{}); err != nil {
+					return err
+				}
+			}
+			if path == "/auth/verify-email" || path == "/auth/login/verify" || path == "/auth/reset-password" {
+				if err := s.RateLimit(c.Context(), httpIP(c), "verify"); err != nil {
 					return err
 				}
 			}
@@ -138,15 +153,39 @@ func NewApp(s *Service) *fiber.App {
 		id, err := s.Register(c.Context(), in, httpIP(c))
 		return fiber.Map{"user_id": id}, err
 	}))
+	add("POST", "/auth/codes", false, 204, httpJSON(func(c fiber.Ctx, in struct {
+		Email   string `json:"email"`
+		Purpose string `json:"purpose"`
+	}) (any, error) {
+		return nil, s.RequestCode(c.Context(), in.Email, in.Purpose, httpIP(c))
+	}))
+	add("POST", "/auth/verify-email", false, 204, httpJSON(func(c fiber.Ctx, in CodeInput) (any, error) {
+		return nil, s.VerifyEmail(c.Context(), in)
+	}))
 	add("POST", "/auth/login", false, 204, httpJSON(func(c fiber.Ctx, in struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}) (any, error) {
-		token, err := s.Login(c.Context(), in.Email, in.Password, httpIP(c))
+		token, err := s.StartLogin(c.Context(), in.Email, in.Password, httpIP(c))
 		if err == nil {
-			httpSetCookie(c, sessionCookie, token, s.Config.SessionTTL, true)
+			httpSetCookie(c, challengeCookie, token, s.Config.CodeTTL, true)
 		}
 		return nil, err
+	}))
+	add("POST", "/auth/login/verify", false, 204, httpJSON(func(c fiber.Ctx, in CodeInput) (any, error) {
+		token, err := s.FinishLogin(c.Context(), in, c.Cookies(challengeCookie))
+		if err == nil {
+			httpSetCookie(c, sessionCookie, token, s.Config.SessionTTL, true)
+			httpSetCookie(c, challengeCookie, "", -time.Second, true)
+		}
+		return nil, err
+	}))
+	add("POST", "/auth/reset-password", false, 204, httpJSON(func(c fiber.Ctx, in struct {
+		Email    string `json:"email"`
+		Code     string `json:"code"`
+		Password string `json:"password"`
+	}) (any, error) {
+		return nil, s.ResetPassword(c.Context(), CodeInput{Email: in.Email, Code: in.Code}, in.Password)
 	}))
 	add("POST", "/auth/logout", true, 204, func(c fiber.Ctx) (any, error) {
 		err := s.Logout(c.Context(), httpActor(c))
@@ -163,8 +202,9 @@ func NewApp(s *Service) *fiber.App {
 func httpUnsafe(method string) bool {
 	return method != "GET" && method != "HEAD" && method != "OPTIONS"
 }
-func httpActor(c fiber.Ctx) Actor { return c.Locals(httpActorKey).(Actor) }
-func httpIP(c fiber.Ctx) string   { return c.Locals(httpIPKey).(string) }
+func httpActor(c fiber.Ctx) Actor              { return c.Locals(httpActorKey).(Actor) }
+func httpIP(c fiber.Ctx) string                { return c.Locals(httpIPKey).(string) }
+func httpParam(c fiber.Ctx, name string) int64 { return c.Locals(":" + name).(int64) }
 
 func httpJSON[T any](fn func(fiber.Ctx, T) (any, error)) func(fiber.Ctx) (any, error) {
 	return func(c fiber.Ctx) (any, error) {
@@ -197,6 +237,42 @@ func httpDecode(c fiber.Ctx, out any) error {
 		return problem(400, "invalid_json")
 	}
 	return nil
+}
+
+func httpPositiveID(raw string) (int64, error) {
+	if raw == "" {
+		return 0, problem(422, "invalid_id")
+	}
+	for _, r := range raw {
+		if r < '0' || r > '9' {
+			return 0, problem(422, "invalid_id")
+		}
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, problem(422, "invalid_id")
+	}
+	return id, nil
+}
+
+func httpPage(raw string, zero bool) (int, error) {
+	if zero && raw == "0" {
+		return 0, nil
+	}
+	n, err := httpPositiveID(raw)
+	if err != nil || uint64(n) > uint64(^uint(0)>>1) {
+		return 0, problem(422, "invalid_pagination")
+	}
+	return int(n), nil
+}
+
+func httpRange(c fiber.Ctx) (time.Time, time.Time, error) {
+	from, e1 := time.Parse(time.RFC3339, c.Query("from"))
+	to, e2 := time.Parse(time.RFC3339, c.Query("to"))
+	if e1 != nil || e2 != nil {
+		return time.Time{}, time.Time{}, problem(422, "invalid_range")
+	}
+	return from, to, nil
 }
 
 func httpSetCookie(c fiber.Ctx, name, value string, ttl time.Duration, httpOnly bool) {

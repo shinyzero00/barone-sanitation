@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,8 +28,8 @@ func run(args []string) error {
 		args = []string{"serve"}
 	}
 	mode := args[0]
-	if mode != "serve" && mode != "migrate" || mode == "serve" && len(args) != 1 || mode == "migrate" && (len(args) != 2 || args[1] != "up" && args[1] != "down") {
-		fmt.Fprintln(os.Stderr, "usage: server [serve | migrate up|down]")
+	if mode != "serve" && mode != "migrate" && mode != "admin" || mode == "serve" && len(args) != 1 || mode == "migrate" && (len(args) != 2 || args[1] != "up" && args[1] != "down") || mode == "admin" && len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: server [serve | migrate up|down | admin EMAIL]")
 		return errors.New("invalid arguments")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -61,7 +62,28 @@ func run(args []string) error {
 		slog.Info("migrations completed")
 		return nil
 	}
-	s := &backend.Service{DB: db, Config: cfg}
+	if mode == "admin" {
+		adminCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		tx, err := db.BeginTxx(adminCtx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		var id int64
+		if err = tx.GetContext(adminCtx, &id, `SELECT user_id FROM users WHERE lower(email)=$1 AND email_verified_at IS NOT NULL FOR UPDATE`, strings.ToLower(strings.TrimSpace(args[1]))); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(adminCtx, `UPDATE users SET role='admin' WHERE user_id=$1`, id); err != nil {
+			return err
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		slog.Info("verified account promoted to administrator")
+		return nil
+	}
+	s := &backend.Service{DB: db, Config: cfg, Mailer: &backend.SMTPMailer{Config: cfg}}
 	app := backend.NewApp(s)
 	done := make(chan error, 1)
 	go func() { done <- app.Listen(cfg.ListenAddress) }()

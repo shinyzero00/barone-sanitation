@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -11,6 +12,11 @@ import (
 type Service struct {
 	DB     *sqlx.DB
 	Config Config
+	Mailer Mailer
+}
+
+type Mailer interface {
+	SendCode(context.Context, string, string, string) error
 }
 
 type Actor struct {
