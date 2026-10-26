@@ -195,6 +195,53 @@ func NewApp(s *Service) *fiber.App {
 		return nil, err
 	})
 	add("GET", "/me", true, 200, func(c fiber.Ctx) (any, error) { return s.GetProfile(c.Context(), httpActor(c)) })
+	add("PATCH", "/me", true, 200, httpJSON(func(c fiber.Ctx, in ProfileUpdate) (any, error) {
+		return s.UpdateProfile(c.Context(), httpActor(c), in)
+	}))
+	add("GET", "/addresses", true, 200, func(c fiber.Ctx) (any, error) { return s.ListAddresses(c.Context(), httpActor(c)) })
+	add("GET", "/addresses/:id", true, 200, func(c fiber.Ctx) (any, error) { return s.GetAddress(c.Context(), httpActor(c), httpParam(c, "id")) })
+	add("POST", "/addresses", true, 201, httpJSON(func(c fiber.Ctx, in AddressInput) (any, error) {
+		return s.SaveAddress(c.Context(), httpActor(c), 0, in)
+	}))
+	add("PUT", "/addresses/:id", true, 200, httpJSON(func(c fiber.Ctx, in AddressInput) (any, error) {
+		return s.SaveAddress(c.Context(), httpActor(c), httpParam(c, "id"), in)
+	}))
+	add("DELETE", "/addresses/:id", true, 204, func(c fiber.Ctx) (any, error) {
+		return nil, s.DeleteAddress(c.Context(), httpActor(c), httpParam(c, "id"))
+	})
+	add("GET", "/consultants", false, 200, func(c fiber.Ctx) (any, error) { return s.ListConsultants(c.Context()) })
+	add("GET", "/consultation-types", false, 200, func(c fiber.Ctx) (any, error) { return s.ListConsultationTypes(c.Context()) })
+	add("GET", "/offerings", false, 200, func(c fiber.Ctx) (any, error) { return s.ListOfferings(c.Context()) })
+	add("POST", "/admin/consultants", true, 201, httpJSON(func(c fiber.Ctx, in struct {
+		UserID int64  `json:"user_id"`
+		Bio    string `json:"bio"`
+	}) (any, error) {
+		return s.ProvisionConsultant(c.Context(), httpActor(c), in.UserID, in.Bio)
+	}))
+	add("PATCH", "/admin/consultants/:id", true, 204, httpJSON(func(c fiber.Ctx, in struct {
+		Active *bool `json:"is_active"`
+	}) (any, error) {
+		if in.Active == nil {
+			return nil, problem(422, "is_active_required")
+		}
+		return nil, s.SetConsultantActive(c.Context(), httpActor(c), httpParam(c, "id"), *in.Active)
+	}))
+	add("POST", "/admin/consultation-types", true, 201, httpJSON(func(c fiber.Ctx, in ConsultationTypeInput) (any, error) {
+		return s.ReplaceConsultationType(c.Context(), httpActor(c), 0, in)
+	}))
+	add("PUT", "/admin/consultation-types/:id", true, 201, httpJSON(func(c fiber.Ctx, in ConsultationTypeInput) (any, error) {
+		return s.ReplaceConsultationType(c.Context(), httpActor(c), httpParam(c, "id"), in)
+	}))
+	add("PUT", "/admin/offerings", true, 200, httpJSON(func(c fiber.Ctx, in struct {
+		TypeID       int64 `json:"consultation_type_id"`
+		ConsultantID int64 `json:"consultant_id"`
+		Active       *bool `json:"is_active"`
+	}) (any, error) {
+		if in.Active == nil {
+			return nil, problem(422, "is_active_required")
+		}
+		return s.SetOffering(c.Context(), httpActor(c), in.TypeID, in.ConsultantID, *in.Active)
+	}))
 	app.Use(func(fiber.Ctx) error { return problem(404, "not_found") })
 	return app
 }
