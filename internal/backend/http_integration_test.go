@@ -4,9 +4,11 @@ package backend
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -131,13 +133,80 @@ func TestHTTPAuthEndToEnd(t *testing.T) {
 	}
 }
 
+func TestHTTPOwnershipSchedulingAndStatus(t *testing.T) {
+	s, mailer := authFixture(t)
+	s.Config.PublicOrigin, s.Config.SlotStep = httpTestOrigin, 15*time.Minute
+	app := NewApp(s)
+	client, other, admin, consultant := newHTTPBrowser(t, app), newHTTPBrowser(t, app), newHTTPBrowser(t, app), newHTTPBrowser(t, app)
+	client.registerLogin(t, mailer, "client@http.test")
+	other.registerLogin(t, mailer, "other@http.test")
+	adminID := admin.registerLogin(t, mailer, "admin@http.test")
+	consultantID := consultant.registerLogin(t, mailer, "consultant@http.test")
+	if _, err := s.DB.ExecContext(t.Context(), `UPDATE users SET role='admin' WHERE user_id=$1`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	var c Consultant
+	admin.request(t, "POST", "/api/v1/admin/consultants", map[string]any{"user_id": consultantID, "bio": "A consultant"}, 201, &c)
+	var typ ConsultationType
+	admin.request(t, "POST", "/api/v1/admin/consultation-types", ConsultationTypeInput{Title: "Visit", DurationMinutes: 60, Price: "25.00"}, 201, &typ)
+	var offering Offering
+	admin.request(t, "PUT", "/api/v1/admin/offerings", map[string]any{"consultation_type_id": typ.ID, "consultant_id": c.ID, "is_active": true}, 200, &offering)
+	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Hour)
+	intervalPath := fmt.Sprintf("/api/v1/consultants/%d/work-intervals", c.ID)
+	var interval WorkInterval
+	consultant.request(t, "POST", intervalPath, WorkIntervalInput{StartsAt: start, EndsAt: start.Add(4 * time.Hour)}, 201, &interval)
+	client.request(t, "GET", intervalPath, nil, 403, nil)
+	var slots []Slot
+	rangeQuery := "?from=" + url.QueryEscape(start.Format(time.RFC3339)) + "&to=" + url.QueryEscape(start.Add(4*time.Hour).Format(time.RFC3339))
+	other.request(t, "GET", fmt.Sprintf("/api/v1/offerings/%d/slots", offering.ID)+rangeQuery, nil, 200, &slots)
+	if len(slots) == 0 {
+		t.Fatal("no public slots")
+	}
+	var address Address
+	client.request(t, "POST", "/api/v1/addresses", AddressInput{AddressLine: "123 Main Street"}, 201, &address)
+	addressPath := fmt.Sprintf("/api/v1/addresses/%d", address.ID)
+	other.request(t, "GET", addressPath, nil, 404, nil)
+	other.request(t, "PUT", addressPath, AddressInput{AddressLine: "Stolen"}, 404, nil)
+	other.request(t, "DELETE", addressPath, nil, 404, nil)
+	var booking Booking
+	client.request(t, "POST", "/api/v1/bookings", BookingInput{OfferingID: offering.ID, AddressID: &address.ID, StartsAt: start}, 201, &booking)
+	path := fmt.Sprintf("/api/v1/bookings/%d", booking.ID)
+	other.request(t, "GET", path, nil, 404, nil)
+	other.request(t, "GET", path+"/events", nil, 404, nil)
+	other.request(t, "POST", path+"/status", map[string]string{"status": "cancelled"}, 404, nil)
+	client.request(t, "POST", path+"/status", map[string]string{"status": "confirmed"}, 403, nil)
+	consultant.request(t, "POST", path+"/status", map[string]string{"status": "confirmed"}, 403, nil)
+	admin.request(t, "POST", path+"/status", map[string]string{"status": "confirmed"}, 200, &booking)
+	if booking.Status != "confirmed" {
+		t.Fatal("status not updated")
+	}
+	consultant.request(t, "DELETE", fmt.Sprintf("%s/%d", intervalPath, interval.ID), nil, 409, nil)
+	client.request(t, "POST", path+"/status", map[string]string{"status": "cancelled"}, 200, &booking)
+	client.request(t, "POST", path+"/status", map[string]string{"status": "cancelled"}, 409, nil)
+	var events []BookingEvent
+	client.request(t, "GET", path+"/events", nil, 200, &events)
+	if len(events) != 3 || events[0].Status != "pending" || events[2].Status != "cancelled" {
+		t.Fatal("wrong status history")
+	}
+	var bookings []Booking
+	other.request(t, "GET", "/api/v1/bookings"+rangeQuery, nil, 200, &bookings)
+	if len(bookings) != 0 {
+		t.Fatal("foreign booking leaked in list")
+	}
+	client.request(t, "GET", "/api/v1/bookings", nil, 422, nil)
+	for _, invalid := range []string{"0", "-1", "+1", "9223372036854775808"} {
+		client.request(t, "GET", "/api/v1/bookings/"+url.PathEscape(invalid), nil, 422, nil)
+	}
+	consultant.request(t, "DELETE", fmt.Sprintf("%s/%d", intervalPath, interval.ID), nil, 204, nil)
+}
+
 func TestHTTPRateBudgetsAndSQLTimeout(t *testing.T) {
 	s, _ := authFixture(t)
 	s.Config.PublicOrigin = httpTestOrigin
 	s.Config.RateLimit = 1
 	app := NewApp(s)
-	httpDo(t, app, httptest.NewRequest("GET", "/api/v1/auth/csrf", nil), 200)
-	response := httpDo(t, app, httptest.NewRequest("GET", "/api/v1/auth/csrf", nil), 429)
+	httpDo(t, app, httptest.NewRequest("GET", "/api/v1/consultants", nil), 200)
+	response := httpDo(t, app, httptest.NewRequest("GET", "/api/v1/offerings", nil), 429)
 	if response.Header.Get("Retry-After") == "" {
 		t.Fatal("missing retry header")
 	}

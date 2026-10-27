@@ -242,6 +242,55 @@ func NewApp(s *Service) *fiber.App {
 		}
 		return s.SetOffering(c.Context(), httpActor(c), in.TypeID, in.ConsultantID, *in.Active)
 	}))
+	intervals := "/consultants/:consultant_id/work-intervals"
+	add("GET", intervals, true, 200, func(c fiber.Ctx) (any, error) {
+		return s.ListWorkIntervals(c.Context(), httpActor(c), httpParam(c, "consultant_id"))
+	})
+	add("GET", intervals+"/:id", true, 200, func(c fiber.Ctx) (any, error) {
+		return s.GetWorkInterval(c.Context(), httpActor(c), httpParam(c, "consultant_id"), httpParam(c, "id"))
+	})
+	add("POST", intervals, true, 201, httpJSON(func(c fiber.Ctx, in WorkIntervalInput) (any, error) {
+		return s.SaveWorkInterval(c.Context(), httpActor(c), httpParam(c, "consultant_id"), 0, in)
+	}))
+	add("PUT", intervals+"/:id", true, 200, httpJSON(func(c fiber.Ctx, in WorkIntervalInput) (any, error) {
+		return s.SaveWorkInterval(c.Context(), httpActor(c), httpParam(c, "consultant_id"), httpParam(c, "id"), in)
+	}))
+	add("DELETE", intervals+"/:id", true, 204, func(c fiber.Ctx) (any, error) {
+		return nil, s.DeleteWorkInterval(c.Context(), httpActor(c), httpParam(c, "consultant_id"), httpParam(c, "id"))
+	})
+	add("GET", "/offerings/:id/slots", false, 200, func(c fiber.Ctx) (any, error) {
+		from, to, err := httpRange(c)
+		if err != nil {
+			return nil, err
+		}
+		return s.AvailableSlots(c.Context(), httpParam(c, "id"), from, to)
+	})
+	add("GET", "/bookings", true, 200, func(c fiber.Ctx) (any, error) {
+		from, to, err := httpRange(c)
+		if err != nil {
+			return nil, err
+		}
+		limit, err := httpPage(c.Query("limit", "100"), false)
+		if err != nil {
+			return nil, err
+		}
+		offset, err := httpPage(c.Query("offset", "0"), true)
+		if err != nil {
+			return nil, err
+		}
+		return s.ListBookings(c.Context(), httpActor(c), from, to, limit, offset)
+	})
+	add("POST", "/bookings", true, 201, httpJSON(func(c fiber.Ctx, in BookingInput) (any, error) { return s.CreateBooking(c.Context(), httpActor(c), in) }))
+	add("GET", "/bookings/:id", true, 200, func(c fiber.Ctx) (any, error) { return s.GetBooking(c.Context(), httpActor(c), httpParam(c, "id")) })
+	add("GET", "/bookings/:id/events", true, 200, func(c fiber.Ctx) (any, error) {
+		return s.ListBookingEvents(c.Context(), httpActor(c), httpParam(c, "id"))
+	})
+	add("POST", "/bookings/:id/status", true, 200, httpJSON(func(c fiber.Ctx, in struct {
+		Status string  `json:"status"`
+		Reason *string `json:"reason"`
+	}) (any, error) {
+		return s.ChangeBookingStatus(c.Context(), httpActor(c), httpParam(c, "id"), in.Status, in.Reason)
+	}))
 	app.Use(func(fiber.Ctx) error { return problem(404, "not_found") })
 	return app
 }

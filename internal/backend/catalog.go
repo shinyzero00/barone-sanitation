@@ -6,8 +6,10 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -185,8 +187,23 @@ func (s *Service) DeleteAddress(ctx context.Context, actor Actor, id int64) erro
 		return problem(422, "invalid_id")
 	}
 	return s.domainTx(ctx, actor, func(tx *sqlx.Tx, role string) error {
-		var deleted int64
-		return tx.GetContext(ctx, &deleted, `DELETE FROM client_addresses a USING clients c WHERE a.client_id=c.client_id AND c.user_id=$1 AND a.client_address_id=$2 RETURNING a.client_address_id`, actor.UserID, id)
+		var owned int64
+		if err := tx.GetContext(ctx, &owned, `SELECT a.client_address_id FROM client_addresses a JOIN clients c USING(client_id) WHERE c.user_id=$1 AND a.client_address_id=$2 FOR UPDATE OF a`, actor.UserID, id); err != nil {
+			return err
+		}
+		var used bool
+		if err := tx.GetContext(ctx, &used, `SELECT EXISTS(SELECT 1 FROM consultation_bookings WHERE client_address_id=$1)`, id); err != nil {
+			return err
+		}
+		if used {
+			return problem(409, "address_in_use")
+		}
+		_, err := tx.ExecContext(ctx, `DELETE FROM client_addresses WHERE client_address_id=$1`, id)
+		var pg *pgconn.PgError
+		if errors.As(err, &pg) && pg.Code == "23503" {
+			return problem(409, "address_in_use")
+		}
+		return err
 	})
 }
 
@@ -352,4 +369,123 @@ func (s *Service) SetOffering(ctx context.Context, actor Actor, typeID, consulta
 		return tx.GetContext(ctx, &o, `INSERT INTO consultation_offerings(consultation_type_id,consultant_id,is_active) VALUES($1,$2,$3) ON CONFLICT(consultant_id,consultation_type_id) DO UPDATE SET is_active=excluded.is_active RETURNING consultation_offering_id,consultant_id,consultation_type_id,is_active`, typeID, consultantID, active)
 	})
 	return o, err
+}
+
+type WorkInterval struct {
+	ID           int64     `db:"work_interval_id" json:"work_interval_id"`
+	ConsultantID int64     `db:"consultant_id" json:"consultant_id"`
+	StartsAt     time.Time `db:"starts_at" json:"starts_at"`
+	EndsAt       time.Time `db:"ends_at" json:"ends_at"`
+}
+
+type WorkIntervalInput struct {
+	StartsAt time.Time `json:"starts_at"`
+	EndsAt   time.Time `json:"ends_at"`
+}
+
+func domainScheduleAccess(ctx context.Context, q sqlx.QueryerContext, actor Actor, role string, consultantID int64) error {
+	if role == "admin" {
+		return nil
+	}
+	if role != "consultant" {
+		return problem(403, "forbidden")
+	}
+	var own bool
+	if err := sqlx.GetContext(ctx, q, &own, `SELECT EXISTS(SELECT 1 FROM consultants WHERE consultant_id=$1 AND user_id=$2)`, consultantID, actor.UserID); err != nil {
+		return err
+	}
+	if !own {
+		return problem(404, "not_found")
+	}
+	return nil
+}
+
+func (s *Service) ListWorkIntervals(ctx context.Context, actor Actor, consultantID int64) ([]WorkInterval, error) {
+	result := []WorkInterval{}
+	if consultantID <= 0 {
+		return nil, problem(422, "invalid_id")
+	}
+	role, err := domainActor(ctx, s.DB, actor, false)
+	if err != nil {
+		return nil, err
+	}
+	if err = domainScheduleAccess(ctx, s.DB, actor, role, consultantID); err != nil {
+		return nil, domainError(err)
+	}
+	err = s.DB.SelectContext(ctx, &result, `SELECT work_interval_id,consultant_id,starts_at,ends_at FROM work_intervals WHERE consultant_id=$1 ORDER BY starts_at,work_interval_id`, consultantID)
+	return result, domainError(err)
+}
+
+func (s *Service) GetWorkInterval(ctx context.Context, actor Actor, consultantID, id int64) (WorkInterval, error) {
+	var w WorkInterval
+	if consultantID <= 0 || id <= 0 {
+		return w, problem(422, "invalid_id")
+	}
+	role, err := domainActor(ctx, s.DB, actor, false)
+	if err != nil {
+		return w, err
+	}
+	if err = domainScheduleAccess(ctx, s.DB, actor, role, consultantID); err != nil {
+		return w, domainError(err)
+	}
+	err = s.DB.GetContext(ctx, &w, `SELECT work_interval_id,consultant_id,starts_at,ends_at FROM work_intervals WHERE consultant_id=$1 AND work_interval_id=$2`, consultantID, id)
+	return w, domainError(err)
+}
+
+// id=0 creates, positive ids update. Existing intervals can be edited even after their start.
+func (s *Service) SaveWorkInterval(ctx context.Context, actor Actor, consultantID, id int64, in WorkIntervalInput) (WorkInterval, error) {
+	var w WorkInterval
+	if consultantID <= 0 || id < 0 || in.StartsAt.IsZero() || !in.EndsAt.After(in.StartsAt) || id == 0 && !in.StartsAt.After(time.Now()) {
+		return w, problem(422, "invalid_interval")
+	}
+	err := s.domainTx(ctx, actor, func(tx *sqlx.Tx, role string) error {
+		if err := domainScheduleAccess(ctx, tx, actor, role, consultantID); err != nil {
+			return err
+		}
+		if err := lockConsultant(ctx, tx, consultantID); err != nil {
+			return err
+		}
+		if id == 0 {
+			if err := tx.GetContext(ctx, &w, `INSERT INTO work_intervals(consultant_id,starts_at,ends_at) VALUES($1,$2,$3) RETURNING work_interval_id,consultant_id,starts_at,ends_at`, consultantID, in.StartsAt, in.EndsAt); err != nil {
+				return err
+			}
+		} else {
+			if err := tx.GetContext(ctx, &w, `UPDATE work_intervals SET starts_at=$3,ends_at=$4 WHERE consultant_id=$1 AND work_interval_id=$2 RETURNING work_interval_id,consultant_id,starts_at,ends_at`, consultantID, id, in.StartsAt, in.EndsAt); err != nil {
+				return err
+			}
+		}
+		return domainScheduleCovered(ctx, tx, consultantID)
+	})
+	return w, err
+}
+
+func (s *Service) DeleteWorkInterval(ctx context.Context, actor Actor, consultantID, id int64) error {
+	if consultantID <= 0 || id <= 0 {
+		return problem(422, "invalid_id")
+	}
+	return s.domainTx(ctx, actor, func(tx *sqlx.Tx, role string) error {
+		if err := domainScheduleAccess(ctx, tx, actor, role, consultantID); err != nil {
+			return err
+		}
+		if err := lockConsultant(ctx, tx, consultantID); err != nil {
+			return err
+		}
+		var deleted int64
+		if err := tx.GetContext(ctx, &deleted, `DELETE FROM work_intervals WHERE consultant_id=$1 AND work_interval_id=$2 RETURNING work_interval_id`, consultantID, id); err != nil {
+			return err
+		}
+		return domainScheduleCovered(ctx, tx, consultantID)
+	})
+}
+
+func domainScheduleCovered(ctx context.Context, tx *sqlx.Tx, consultantID int64) error {
+	var uncovered bool
+	err := tx.GetContext(ctx, &uncovered, `SELECT EXISTS(SELECT 1 FROM consultation_bookings b JOIN consultation_offerings o USING(consultation_offering_id) JOIN consultation_booking_current_statuses s USING(consultation_booking_id) WHERE o.consultant_id=$1 AND s.status IN ('pending','confirmed') AND NOT EXISTS(SELECT 1 FROM work_intervals w WHERE w.consultant_id=$1 AND w.starts_at<=b.starts_at AND w.ends_at>=b.ends_at))`, consultantID)
+	if err != nil {
+		return err
+	}
+	if uncovered {
+		return problem(409, "bookings_uncovered")
+	}
+	return nil
 }

@@ -197,11 +197,4 @@ func TestCatalogAdministrationAndImmutableReplacement(t *testing.T) {
 	if len(offerings) != 0 {
 		t.Fatal("inactive offering leaked")
 	}
-	for _, path := range []string{"bookings", "offerings/1/slots", "consultants/1/work-intervals"} {
-		guest.request(t, "GET", "/api/v1/"+path, nil, 404, nil)
-	}
-	var futureTables int
-	if err := s.DB.GetContext(t.Context(), &futureTables, `SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name IN ('work_intervals','consultation_bookings','consultation_booking_status_events','consultation_booking_current_statuses')`); err != nil || futureTables != 0 {
-		t.Fatalf("future-stage tables/views = %d: %v", futureTables, err)
-	}
 }
