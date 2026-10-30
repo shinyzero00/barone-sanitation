@@ -20,6 +20,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/recover"
+	"github.com/shinyzero00/barone-sanitation/internal/apidocs"
 )
 
 const (
@@ -291,6 +292,7 @@ func NewApp(s *Service) *fiber.App {
 	}) (any, error) {
 		return s.ChangeBookingStatus(c.Context(), httpActor(c), httpParam(c, "id"), in.Status, in.Reason)
 	}))
+	apidocs.Register(app)
 	app.Use(func(fiber.Ctx) error { return problem(404, "not_found") })
 	return app
 }

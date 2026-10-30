@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Barone Sanitation API</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.30.2/swagger-ui.css">
+</head>
+<body>
+  <p>UI assets loaded from pinned CDN; spec embedded locally.</p>
+  <p>Use this page on the API's HTTPS origin. Login cookies are managed by the browser, not the Authorize dialog. Mutations automatically obtain a CSRF token if needed.</p>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.30.2/swagger-ui-bundle.js"></script>
+  <script>
+    "use strict";
+    function csrfCookie() {
+      const cookie = document.cookie.split("; ").find(value => value.startsWith("__Host-csrf="));
+      return cookie ? decodeURIComponent(cookie.slice("__Host-csrf=".length)) : "";
+    }
+    async function initialize() {
+      const response = await fetch("/openapi.json", {credentials: "include", cache: "no-store", redirect: "error"});
+      if (!response.ok) throw new Error("Unable to load API specification");
+      const spec = await response.json();
+      // UI-only defaults let validation pass before the interceptor supplies CSRF.
+      spec.components.parameters.Origin.schema.default = window.location.origin;
+      spec.components.parameters.CSRFHeader.schema.default = "automatically supplied";
+      spec.components.parameters.CSRFCookie.schema.default = "browser managed";
+      window.ui = SwaggerUIBundle({
+        spec,
+        dom_id: "#swagger-ui",
+        validatorUrl: null,
+        persistAuthorization: false,
+        withCredentials: true,
+        requestInterceptor: async request => {
+          const url = new URL(request.url, window.location.href);
+          if (url.origin !== window.location.origin) {
+            throw new Error("Only same-origin API requests are allowed");
+          }
+          request.credentials = "include";
+          request.redirect = "error";
+          // Origin and cookies belong to the browser, never to Swagger's controls.
+          for (const name of Object.keys(request.headers)) {
+            if (["origin", "cookie", "x-csrf-token"].includes(name.toLowerCase())) {
+              delete request.headers[name];
+            }
+          }
+          if (!["GET", "HEAD", "OPTIONS"].includes((request.method || "GET").toUpperCase())) {
+            let token = csrfCookie();
+            if (!token) {
+              const response = await fetch("/csrf", {credentials: "include", cache: "no-store", redirect: "error"});
+              if (!response.ok) throw new Error("Unable to obtain CSRF token");
+              token = csrfCookie();
+              if (!token) throw new Error("CSRF cookie unavailable; use the API's HTTPS origin");
+            }
+            request.headers["X-CSRF-Token"] = token;
+          }
+          return request;
+        }
+      });
+    }
+    initialize().catch(() => {
+      document.getElementById("swagger-ui").textContent = "Unable to load documentation. Check HTTPS, network access and the pinned CDN.";
+    });
+  </script>
+</body>
+</html>

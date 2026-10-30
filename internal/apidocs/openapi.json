@@ -1,0 +1,334 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Barone Sanitation API",
+    "version": "1.0.0",
+    "description": "Same-origin HTTPS consultation booking API. Paths are absolute; the server is the origin serving this document. Secure host-only cookies use Path=/ and SameSite=Strict; session and login-challenge cookies are HttpOnly. Browsers manage these cookies, including in Swagger UI; the Authorize dialog cannot set HttpOnly cookies. Every unsafe request (including unauthenticated authentication requests) requires Origin exactly equal to PUBLIC_ORIGIN, the signed __Host-csrf cookie, and matching X-CSRF-Token. Obtain CSRF via GET /csrf or /api/v1/auth/csrf first. Browsers set Origin themselves. JSON bodies must be objects with known fields only, with no trailing JSON values; maximum body size is 16384 bytes. Empty-body DELETE/logout is allowed; a supplied body must be {}. Responses are no-store with nosniff and frame denial; HTTPS configurations also set HSTS. All timestamps are RFC3339 with an explicit offset; submitted offsets need not be preserved. URL-encode query offsets containing +. IDs are positive signed 64-bit integers (clients must avoid JavaScript precision loss). Prices are decimal strings, never numbers; there is no currency field. All /api/v1 requests share a PostgreSQL-backed per-IP http rate bucket (default 30/minute); registration, code requests, login and verification also use separate buckets. /csrf and /healthz are outside the common API bucket. Rate/cooldown/lockout errors include Retry-After seconds. Protected endpoints reload session validity and role on every request. Unexpected errors return 500 without internal details. No reschedule endpoint exists; cancel and create a new booking."
+  },
+  "servers": [{"url": "/", "description": "Same HTTPS origin as the documentation"}],
+  "tags": [
+    {"name": "System", "description": "Health and CSRF bootstrap"},
+    {"name": "Authentication", "description": "Password plus email-code authentication"},
+    {"name": "Profile", "description": "Current user's profile and addresses, even for administrators"},
+    {"name": "Catalog", "description": "Public active catalog and advisory slots"},
+    {"name": "Administration", "description": "Administrator-only catalog mutations"},
+    {"name": "Schedules", "description": "Administrators or the owning consultant only"},
+    {"name": "Bookings", "description": "Role- and ownership-scoped bookings and append-only history"}
+  ],
+  "security": [],
+  "paths": {
+    "/healthz": {"get": {
+      "operationId": "getHealth", "tags": ["System"], "summary": "Check database health",
+      "description": "Pings PostgreSQL only; does not check SMTP delivery. Not in the API rate bucket.", "security": [],
+      "responses": {"200": {"description": "Database reachable", "content": {"application/json": {"schema": {"type": "object", "required": ["status"], "properties": {"status": {"type": "string", "enum": ["ok"]}}}}}}, "503": {"description": "Database ping failed: unhealthy", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/csrf": {"get": {
+      "operationId": "getCSRF", "tags": ["System"], "summary": "Obtain CSRF token", "security": [],
+      "description": "Returns a valid existing signed cookie or sets __Host-csrf (Secure, SameSite=Strict, Path=/, readable by JavaScript, 24-hour lifetime). Send its value as X-CSRF-Token on every unsafe request. Not in the API rate bucket.",
+      "responses": {"200": {"$ref": "#/components/responses/CSRF"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/api/v1/auth/csrf": {"get": {
+      "operationId": "getAuthCSRF", "tags": ["Authentication"], "summary": "Obtain CSRF token through the API", "security": [],
+      "description": "Same cookie and response as /csrf, but subject to the common API rate bucket.",
+      "responses": {"200": {"$ref": "#/components/responses/CSRF"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/api/v1/auth/register": {"post": {
+      "operationId": "registerClient", "tags": ["Authentication"], "summary": "Register a client", "security": [],
+      "description": "Always creates the client role, never an administrator or consultant. Trims name/phone; trims and lowercases email. Sends verification code after commit, without creating a session. If mail fails, registration may already be committed; recover via /auth/codes after cooldown, not another registration. Codes, hashes and tokens are never returned in JSON. SMTP send is synchronous after commit, with best-effort revocation of that exact issued code on failure, preserving cooldown; there is no durable outbox or delivery guarantee.",
+      "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RegisterInput"}}}},
+      "responses": {"201": {"description": "Client registered; verification code sent", "content": {"application/json": {"schema": {"type": "object", "required": ["user_id"], "properties": {"user_id": {"$ref": "#/components/schemas/ID"}}}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "403": {"$ref": "#/components/responses/Forbidden"}, "409": {"$ref": "#/components/responses/Conflict"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/api/v1/auth/codes": {"post": {
+      "operationId": "requestCode", "tags": ["Authentication"], "summary": "Request verification or reset code", "security": [],
+      "description": "Only verify_email and reset_password are accepted, not login. Unknown emails and already-verified verification requests succeed silently. Only the latest code per user/purpose is usable; regeneration revokes earlier usable codes and is cooldown-limited. Delivery occurs after commit; mail failure revokes the issued code best-effort and retains cooldown.",
+      "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RequestCodeInput"}}}},
+      "responses": {"204": {"description": "Request accepted, including unknown email"}, "400": {"$ref": "#/components/responses/BadRequest"}, "403": {"$ref": "#/components/responses/Forbidden"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/api/v1/auth/verify-email": {"post": {
+      "operationId": "verifyEmail", "tags": ["Authentication"], "summary": "Verify email ownership", "security": [],
+      "description": "Consumes the latest verify_email code; does not log in. Failed attempts persist. Expired, revoked, used or incorrect codes return 401. Attempt exhaustion returns 429 and blocks regeneration for at least 15 minutes (configuration may extend it).",
+      "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CodeInput"}}}},
+      "responses": {"204": {"description": "Email verified; no session issued"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/api/v1/auth/login": {"post": {
+      "operationId": "startLogin", "tags": ["Authentication"], "summary": "Start password plus email-code login", "security": [],
+      "description": "Requires a verified email and correct password. Sends login code bound to a new challenge cookie. Neither challenge nor code appears in the body. Default code/challenge lifetime is 10 minutes; configurable. Delivery failure returns 503 with best-effort code revocation and preserved cooldown.",
+      "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginInput"}}}},
+      "responses": {"204": {"description": "Login code sent; challenge cookie set", "headers": {"Set-Cookie": {"description": "__Host-login-challenge; Secure; HttpOnly; SameSite=Strict; Path=/", "schema": {"type": "string"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/api/v1/auth/login/verify": {"post": {
+      "operationId": "finishLogin", "tags": ["Authentication"], "summary": "Verify login code and issue session", "security": [{"LoginChallenge": []}],
+      "description": "Requires the originating __Host-login-challenge cookie, not an existing session. Consumes the latest login code, issues session cookie and clears challenge cookie. Session default lifetime is 30 days, configurable. Failed attempts persist; exhaustion blocks regeneration for at least 15 minutes. Missing/wrong challenge, email or code denies login with 401 (or 429 when locked).",
+      "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CodeInput"}}}},
+      "responses": {"204": {"description": "Session issued; challenge cleared", "headers": {"Set-Cookie": {"description": "Separate Set-Cookie headers set __Host-session and expire __Host-login-challenge; both Secure, HttpOnly, SameSite=Strict, Path=/.", "schema": {"type": "string"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/api/v1/auth/reset-password": {"post": {
+      "operationId": "resetPassword", "tags": ["Authentication"], "summary": "Reset password with email code", "security": [],
+      "description": "Consumes latest reset_password code, changes password and revokes all sessions and outstanding codes. Does not log in. Failed attempts persist; lockout blocks regeneration for at least 15 minutes.",
+      "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResetPasswordInput"}}}},
+      "responses": {"204": {"description": "Password changed and sessions revoked; no session issued"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/api/v1/auth/logout": {"post": {
+      "operationId": "logout", "tags": ["Authentication"], "summary": "Revoke current session", "security": [{"Session": []}],
+      "description": "Revokes only the authenticated session and clears __Host-session. Body may be absent; if present it must be {}.",
+      "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+      "requestBody": {"$ref": "#/components/requestBodies/Empty"},
+      "responses": {"204": {"description": "Session revoked and __Host-session cookie expired", "headers": {"Set-Cookie": {"description": "Expires __Host-session with Secure; HttpOnly; SameSite=Strict; Path=/", "schema": {"type": "string"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/api/v1/me": {
+      "get": {
+        "operationId": "getProfile", "tags": ["Profile"], "summary": "Read own profile", "description": "Current user's profile only, including for administrators. Nullable profile-specific fields are always present.", "security": [{"Session": []}],
+        "responses": {"200": {"description": "Current profile", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Profile"}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "404": {"$ref": "#/components/responses/NotFound"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      },
+      "patch": {
+        "operationId": "updateProfile", "tags": ["Profile"], "summary": "Update own profile", "security": [{"Session": []}],
+        "description": "Omitted/null fields are unchanged. Empty strings clear phone/bio. Phone requires a client profile, bio a consultant profile, otherwise 422 profile_not_available. Email and role are not editable. Text must be valid UTF-8 without NUL; nonempty name must not be whitespace-only.",
+        "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProfileUpdate"}}}},
+        "responses": {"200": {"description": "Updated profile", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Profile"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      }
+    },
+    "/api/v1/addresses": {
+      "get": {
+        "operationId": "listAddresses", "tags": ["Profile"], "summary": "List own addresses", "description": "Owned client addresses only, even for admins; ordered by address ID. No client profile returns an empty array.", "security": [{"Session": []}],
+        "responses": {"200": {"description": "Owned addresses", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Address"}}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      },
+      "post": {
+        "operationId": "createAddress", "tags": ["Profile"], "summary": "Create own client address", "description": "Requires an existing client profile (otherwise 404). Text must be valid UTF-8 without NUL; address_line must not be whitespace-only.", "security": [{"Session": []}],
+        "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AddressInput"}}}},
+        "responses": {"201": {"description": "Created address", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Address"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      }
+    },
+    "/api/v1/addresses/{id}": {
+      "parameters": [{"$ref": "#/components/parameters/ID"}],
+      "get": {
+        "operationId": "getAddress", "tags": ["Profile"], "summary": "Read own address", "description": "Absent or other user's address returns 404, including for administrators.", "security": [{"Session": []}],
+        "responses": {"200": {"description": "Owned address", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Address"}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "404": {"$ref": "#/components/responses/NotFound"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      },
+      "put": {
+        "operationId": "replaceAddress", "tags": ["Profile"], "summary": "Replace own address", "description": "Omitted/null label clears it. Other user's or absent address returns 404. Address text remains editable even when referenced by historical bookings; it is not a historical snapshot.", "security": [{"Session": []}],
+        "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AddressInput"}}}},
+        "responses": {"200": {"description": "Updated address", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Address"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      },
+      "delete": {
+        "operationId": "deleteAddress", "tags": ["Profile"], "summary": "Delete unused own address", "description": "Any booking reference, including historical bookings, prevents deletion: 409 address_in_use. Other user's or absent address returns 404.", "security": [{"Session": []}],
+        "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}], "requestBody": {"$ref": "#/components/requestBodies/Empty"},
+        "responses": {"204": {"description": "Address deleted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      }
+    },
+    "/api/v1/consultants": {"get": {
+      "operationId": "listConsultants", "tags": ["Catalog"], "summary": "List active consultants", "description": "Public; ordered by consultant ID. Only active consultants are returned.", "security": [],
+      "responses": {"200": {"description": "Active consultants", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Consultant"}}}}}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/api/v1/consultation-types": {"get": {
+      "operationId": "listConsultationTypes", "tags": ["Catalog"], "summary": "List active consultation types", "description": "Public; ordered by type ID. Commercial terms are versioned, not edited in place.", "security": [],
+      "responses": {"200": {"description": "Active types", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/ConsultationType"}}}}}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/api/v1/offerings": {"get": {
+      "operationId": "listOfferings", "tags": ["Catalog"], "summary": "List active offerings", "description": "Public; assignment, type and consultant must all be active. Ordered by offering ID.", "security": [],
+      "responses": {"200": {"description": "Active offerings", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Offering"}}}}}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/api/v1/admin/consultants": {"post": {
+      "operationId": "provisionConsultant", "tags": ["Administration"], "summary": "Promote an existing client to consultant", "security": [{"Session": []}],
+      "description": "Admin only. Changes the existing client's role to consultant, preserving their client profile and historical bookings. Missing/non-client target returns 404. Bio may be omitted (empty string); valid UTF-8 without NUL, up to 10000 characters.",
+      "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConsultantInput"}}}},
+      "responses": {"201": {"description": "Created consultant", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Consultant"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/api/v1/admin/consultants/{id}": {
+      "parameters": [{"$ref": "#/components/parameters/ID"}],
+      "patch": {
+        "operationId": "setConsultantActive", "tags": ["Administration"], "summary": "Activate or deactivate consultant", "security": [{"Session": []}],
+        "description": "Admin only. is_active must be supplied and non-null. Deactivation prevents new bookings but does not cancel existing ones.",
+        "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ActiveInput"}}}},
+        "responses": {"204": {"description": "Consultant activation updated"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      }
+    },
+    "/api/v1/admin/consultation-types": {"post": {
+      "operationId": "createConsultationType", "tags": ["Administration"], "summary": "Create consultation type", "description": "Admin only. Creates active immutable commercial terms. Title must not be whitespace-only; all text must be valid UTF-8 without NUL.", "security": [{"Session": []}],
+      "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConsultationTypeInput"}}}},
+      "responses": {"201": {"description": "Created type", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConsultationType"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "409": {"$ref": "#/components/responses/Conflict"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/api/v1/admin/consultation-types/{id}": {
+      "parameters": [{"$ref": "#/components/parameters/ID"}],
+      "put": {
+        "operationId": "replaceConsultationType", "tags": ["Administration"], "summary": "Create replacement type with new ID", "security": [{"Session": []}],
+        "description": "Admin only. Returns 201 with a NEW type ID, not an in-place update. Atomically deactivates old type and all its offerings, copying active assignments to the new type. Existing bookings retain original offering, price and duration. Retired target returns 409 inactive_type. Deactivation does not cancel bookings.",
+        "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConsultationTypeInput"}}}},
+        "responses": {"201": {"description": "New replacement type", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConsultationType"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      }
+    },
+    "/api/v1/admin/offerings": {"put": {
+      "operationId": "setOffering", "tags": ["Administration"], "summary": "Create or set offering activation", "security": [{"Session": []}],
+      "description": "Admin only. Upserts the consultant/type pair, reactivating or deactivating it. is_active is required and non-null. Cannot activate a retired type (409 inactive_type). Deactivation prevents new bookings without cancelling existing bookings.",
+      "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OfferingInput"}}}},
+      "responses": {"200": {"description": "Created or updated offering", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Offering"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+    }},
+    "/api/v1/consultants/{consultant_id}/work-intervals": {
+      "parameters": [{"$ref": "#/components/parameters/ConsultantID"}],
+      "get": {
+        "operationId": "listWorkIntervals", "tags": ["Schedules"], "summary": "List consultant's work intervals", "security": [{"Session": []}],
+        "description": "Admin or owning consultant only; other consultant returns 404, client role 403. Ordered by starts_at then interval ID. For an administrator a nonexistent consultant returns an empty list.",
+        "responses": {"200": {"description": "Work intervals", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/WorkInterval"}}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      },
+      "post": {
+        "operationId": "createWorkInterval", "tags": ["Schedules"], "summary": "Create future work interval", "security": [{"Session": []}],
+        "description": "Admin or owning consultant only (other consultant 404, client 403). Start must be strictly in the future; end after start. Intervals are explicit instants, not recurring schedules. A booking must fit in one interval; adjacent intervals are not combined.",
+        "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkIntervalInput"}}}},
+        "responses": {"201": {"description": "Created interval", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkInterval"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      }
+    },
+    "/api/v1/consultants/{consultant_id}/work-intervals/{id}": {
+      "parameters": [{"$ref": "#/components/parameters/ConsultantID"}, {"$ref": "#/components/parameters/ID"}],
+      "get": {
+        "operationId": "getWorkInterval", "tags": ["Schedules"], "summary": "Read consultant's work interval", "description": "Admin or owning consultant only (other consultant 404, client 403). Interval must belong to consultant_id.", "security": [{"Session": []}],
+        "responses": {"200": {"description": "Work interval", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkInterval"}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      },
+      "put": {
+        "operationId": "replaceWorkInterval", "tags": ["Schedules"], "summary": "Replace consultant's work interval", "security": [{"Session": []}],
+        "description": "Admin or owning consultant only. Existing intervals may be edited after their start. End must be after start. Rolls back with 409 bookings_uncovered if any pending/confirmed booking would no longer be fully covered by one interval; adjacent intervals cannot be combined.",
+        "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkIntervalInput"}}}},
+        "responses": {"200": {"description": "Updated interval", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkInterval"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      },
+      "delete": {
+        "operationId": "deleteWorkInterval", "tags": ["Schedules"], "summary": "Delete consultant's work interval", "security": [{"Session": []}],
+        "description": "Admin or owning consultant only. Rolls back with 409 bookings_uncovered if any pending/confirmed booking loses coverage by one interval. Interval must belong to consultant_id.",
+        "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}], "requestBody": {"$ref": "#/components/requestBodies/Empty"},
+        "responses": {"204": {"description": "Interval deleted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      }
+    },
+    "/api/v1/offerings/{id}/slots": {
+      "parameters": [{"$ref": "#/components/parameters/ID"}],
+      "get": {
+        "operationId": "listAvailableSlots", "tags": ["Catalog"], "summary": "Find advisory available slots", "security": [],
+        "description": "Required from < to, at most 31 days; nonzero from. Grid anchored at from, default 15-minute spacing (configured SLOT_STEP). Candidate count is bounded: (to-from)/step must not exceed 100000. Results start in the future, end <= to, fit wholly in one interval and exclude pending/confirmed overlaps across all offerings for that consultant. Inactive/unknown offerings yield an empty array. Advisory only, not reservations; creation rechecks under lock and need not align to the grid. Ordered by starts_at.",
+        "parameters": [{"$ref": "#/components/parameters/From"}, {"$ref": "#/components/parameters/To"}],
+        "responses": {"200": {"description": "Available slots", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Slot"}}}}}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"description": "internal_error or invalid_slot_step (misconfigured grid)", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}}
+      }
+    },
+    "/api/v1/bookings": {
+      "get": {
+        "operationId": "listBookings", "tags": ["Bookings"], "summary": "List visible bookings in start-time range", "security": [{"Session": []}],
+        "description": "Clients see own bookings; consultants see assigned bookings plus retained client history; admins see all. Filters starts_at in [from,to), from < to, at most 366 days and nonzero from. Ordered by starts_at then booking ID. Pagination is limit/offset, no wrapper or total count.",
+        "parameters": [{"$ref": "#/components/parameters/From"}, {"$ref": "#/components/parameters/To"}, {"name": "limit", "in": "query", "description": "Positive decimal integer, at most 1000", "schema": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100}}, {"name": "offset", "in": "query", "description": "Nonnegative decimal integer within the server's native integer range", "schema": {"type": "integer", "format": "int64", "minimum": 0, "default": 0}}],
+        "responses": {"200": {"description": "Visible bookings", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Booking"}}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      },
+      "post": {
+        "operationId": "createBooking", "tags": ["Bookings"], "summary": "Create pending booking", "security": [{"Session": []}],
+        "description": "Current client role only. Optional address must belong to caller (otherwise 422 invalid_address). Start strictly in future; server derives end from immutable type duration. Offering, type and consultant must all be active. Must fit in one work interval; pending/confirmed overlap for the same consultant across any offering returns 409. Adjacent bookings allowed; client overlap across different consultants is not prohibited. Initial pending event commits atomically with booking. Slot-grid alignment is not required.",
+        "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BookingInput"}}}},
+        "responses": {"201": {"description": "Created pending booking", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Booking"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      }
+    },
+    "/api/v1/bookings/{id}": {
+      "parameters": [{"$ref": "#/components/parameters/ID"}],
+      "get": {
+        "operationId": "getBooking", "tags": ["Bookings"], "summary": "Read visible booking", "security": [{"Session": []}],
+        "description": "Own client booking, assigned consultant booking (including retained own client history), or admin. Absent/inaccessible booking returns 404. Price/duration are the original immutable commercial terms.",
+        "responses": {"200": {"description": "Visible booking", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Booking"}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "404": {"$ref": "#/components/responses/NotFound"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      }
+    },
+    "/api/v1/bookings/{id}/events": {
+      "parameters": [{"$ref": "#/components/parameters/ID"}],
+      "get": {
+        "operationId": "listBookingEvents", "tags": ["Bookings"], "summary": "Read visible booking's status history", "security": [{"Session": []}],
+        "description": "Same visibility as GET booking; absent/inaccessible booking returns 404. Append-only events ordered by occurred_at then event ID. Latest event defines current status.",
+        "responses": {"200": {"description": "Chronological status events", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/BookingEvent"}}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "404": {"$ref": "#/components/responses/NotFound"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      }
+    },
+    "/api/v1/bookings/{id}/status": {
+      "parameters": [{"$ref": "#/components/parameters/ID"}],
+      "post": {
+        "operationId": "changeBookingStatus", "tags": ["Bookings"], "summary": "Append booking status transition", "security": [{"Session": []}],
+        "description": "Admins may perform all allowed transitions; clients may only cancel own pending/confirmed bookings. Consultants cannot change status, even retained own client history. pending -> confirmed/cancelled; confirmed -> completed/cancelled/no_show. cancelled/completed/no_show are terminal. Repeated or disallowed transitions return 409 invalid_transition. No additional start/end-time gate. Cancellation releases blocked time without deleting history. Reason is optional/null, valid UTF-8 without NUL, up to 2000 characters.",
+        "parameters": [{"$ref": "#/components/parameters/Origin"}, {"$ref": "#/components/parameters/CSRFHeader"}, {"$ref": "#/components/parameters/CSRFCookie"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StatusInput"}}}},
+        "responses": {"200": {"description": "Booking with updated status", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Booking"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "413": {"$ref": "#/components/responses/TooLarge"}, "415": {"$ref": "#/components/responses/MediaType"}, "422": {"$ref": "#/components/responses/Invalid"}, "429": {"$ref": "#/components/responses/RateLimited"}, "503": {"$ref": "#/components/responses/Unavailable"}, "500": {"$ref": "#/components/responses/InternalError"}}
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "Session": {"type": "apiKey", "in": "cookie", "name": "__Host-session", "description": "Opaque session issued by POST /api/v1/auth/login/verify. Secure; HttpOnly; SameSite=Strict; Path=/; no Domain. Browser-managed, not bearer auth. Must be unexpired, unrevoked and belong to an email-verified user."},
+      "LoginChallenge": {"type": "apiKey", "in": "cookie", "name": "__Host-login-challenge", "description": "Opaque challenge issued by POST /api/v1/auth/login; binds the latest login code to its originating browser. Secure; HttpOnly; SameSite=Strict; Path=/; no Domain. Cleared after successful verification."}
+    },
+    "parameters": {
+      "ID": {"name": "id", "in": "path", "required": true, "description": "Positive decimal digits only, within signed bigint range; refers to the resource in this path", "schema": {"$ref": "#/components/schemas/ID"}},
+      "ConsultantID": {"name": "consultant_id", "in": "path", "required": true, "description": "Positive consultant ID, decimal digits only within signed bigint range", "schema": {"$ref": "#/components/schemas/ID"}},
+      "Origin": {"name": "Origin", "in": "header", "required": true, "description": "Must exactly equal configured PUBLIC_ORIGIN (HTTPS origin, including non-default port, no trailing slash). Required even for unauthenticated mutations. Browser supplies this header; do not set it in browser JavaScript.", "schema": {"type": "string", "format": "uri"}},
+      "CSRFHeader": {"name": "X-CSRF-Token", "in": "header", "required": true, "description": "Must exactly match valid signed __Host-csrf cookie. Obtain via GET /csrf or /api/v1/auth/csrf. Swagger UI injects it automatically.", "schema": {"type": "string"}},
+      "CSRFCookie": {"name": "__Host-csrf", "in": "cookie", "required": true, "description": "Signed CSRF token cookie, Secure; SameSite=Strict; Path=/; no Domain, not HttpOnly. Browser-managed, obtained from GET /csrf or /api/v1/auth/csrf.", "schema": {"type": "string"}},
+      "From": {"name": "from", "in": "query", "required": true, "description": "Inclusive nonzero range start, RFC3339 with explicit offset; URL-encode +. Must be before to; see operation for maximum range.", "schema": {"type": "string", "format": "date-time"}},
+      "To": {"name": "to", "in": "query", "required": true, "description": "RFC3339 range end with explicit offset; bookings filter starts strictly before to, slots end no later than to", "schema": {"type": "string", "format": "date-time"}}
+    },
+    "requestBodies": {
+      "Empty": {"required": false, "description": "No body, or an empty JSON object; unknown fields rejected", "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "properties": {}}}}}
+    },
+    "responses": {
+      "CSRF": {"description": "Signed CSRF token; sets cookie only if existing cookie is invalid/missing", "headers": {"Set-Cookie": {"description": "When needed: __Host-csrf; Secure; SameSite=Strict; Path=/; 24-hour lifetime; JavaScript-readable", "schema": {"type": "string"}}}, "content": {"application/json": {"schema": {"type": "object", "required": ["csrf_token"], "properties": {"csrf_token": {"type": "string"}}}}}},
+      "BadRequest": {"description": "invalid_json (non-object, malformed, unknown fields, wrong field types, trailing values) or framework bad_request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Unauthorized": {"description": "unauthenticated (missing/invalid/expired/revoked session), unauthorized (session no longer valid on domain recheck), invalid_credentials, or invalid_code (incorrect, expired, revoked, consumed, or wrong/missing login challenge), as applicable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Forbidden": {"description": "invalid_origin, invalid_csrf, or forbidden (role disallowed), as applicable; global Origin/CSRF checks run before authentication and body decoding", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "NotFound": {"description": "not_found: resource absent or inaccessible to caller", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Conflict": {"description": "conflict (uniqueness), address_in_use, inactive_type, bookings_uncovered, inactive_offering, outside_work_interval, booking_overlap, or invalid_transition, as applicable to the operation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "TooLarge": {"description": "request_too_large: body exceeds 16384 bytes", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "MediaType": {"description": "application_json_required: expected Content-Type application/json (parameters such as charset are allowed)", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Invalid": {"description": "Validation failure, as applicable: invalid_id, invalid_pagination, invalid_range, too_many_slots, invalid_email, invalid_registration, invalid_phone, invalid_purpose, invalid_code, invalid_password, invalid_profile, profile_not_available, invalid_address, invalid_consultant, is_active_required, invalid_consultation_type, invalid_interval, invalid_booking, booking_in_past, invalid_status_change, invalid_status, invalid_reference_or_value, or invalid_rate_limit_key", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "RateLimited": {"description": "rate_limited (per-IP bucket), code_cooldown (regeneration), or code_locked (attempt exhaustion). Retry after the indicated number of seconds.", "headers": {"Retry-After": {"description": "Remaining delay in whole seconds, rounded up, at least 1", "schema": {"type": "integer", "format": "int64", "minimum": 1}}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Unavailable": {"description": "rate_limiter_unavailable, authentication_unavailable, or mail_unavailable, as applicable. Unexpected database failures return 500, not automatically 503.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "InternalError": {"description": "internal_error: unexpected failure, no implementation details exposed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+    },
+    "schemas": {
+      "ID": {"type": "integer", "format": "int64", "minimum": 1, "description": "Positive PostgreSQL bigint / Go int64; maximum 9223372036854775807"},
+      "NullableID": {"type": "integer", "format": "int64", "minimum": 1, "nullable": true, "description": "Positive signed bigint, or null"},
+      "Price": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,9})(\\.[0-9]{1,2})?$", "example": "125.00", "description": "Nonnegative decimal string up to 9999999999.99; at most two fractional digits, no sign/exponent/extra leading zeros. Responses use PostgreSQL numeric text."},
+      "Email": {"type": "string", "format": "email", "maxLength": 254, "description": "Trimmed and lowercased before validation; bare mailbox only, no display name or CR/LF; at most 254 bytes after canonicalization"},
+      "Password": {"type": "string", "format": "password", "writeOnly": true, "maxLength": 128, "description": "12-128 bytes (not characters); not trimmed. Stored using Argon2id. Never returned."},
+      "Code": {"type": "string", "pattern": "^[0-9]{6}$", "example": "012345", "writeOnly": true, "description": "Six ASCII decimal digits; preserve leading zeros. Only latest code per user/purpose is usable."},
+      "Status": {"type": "string", "enum": ["pending", "confirmed", "cancelled", "completed", "no_show"]},
+      "Error": {"type": "object", "required": ["error"], "additionalProperties": false, "properties": {"error": {"type": "string", "description": "Machine-readable error code"}}},
+      "RegisterInput": {"type": "object", "additionalProperties": false, "required": ["name", "email", "password", "phone"], "properties": {
+        "name": {"type": "string", "minLength": 1, "description": "Trimmed, then 1-200 Unicode characters; valid UTF-8, no control characters"},
+        "email": {"$ref": "#/components/schemas/Email"}, "password": {"$ref": "#/components/schemas/Password"},
+        "phone": {"type": "string", "minLength": 1, "description": "Trimmed, then 1-40 characters, contains at least one digit, only ASCII digits and +() -.x"}
+      }},
+      "RequestCodeInput": {"type": "object", "additionalProperties": false, "required": ["email", "purpose"], "properties": {"email": {"$ref": "#/components/schemas/Email"}, "purpose": {"type": "string", "enum": ["verify_email", "reset_password"]}}},
+      "CodeInput": {"type": "object", "additionalProperties": false, "required": ["email", "code"], "properties": {"email": {"$ref": "#/components/schemas/Email"}, "code": {"$ref": "#/components/schemas/Code"}}},
+      "LoginInput": {"type": "object", "additionalProperties": false, "required": ["email", "password"], "properties": {"email": {"$ref": "#/components/schemas/Email"}, "password": {"$ref": "#/components/schemas/Password"}}},
+      "ResetPasswordInput": {"type": "object", "additionalProperties": false, "required": ["email", "code", "password"], "properties": {"email": {"$ref": "#/components/schemas/Email"}, "code": {"$ref": "#/components/schemas/Code"}, "password": {"$ref": "#/components/schemas/Password"}}},
+      "Profile": {"type": "object", "required": ["user_id", "name", "role", "client_id", "phone", "consultant_id", "bio"], "properties": {"user_id": {"$ref": "#/components/schemas/ID"}, "name": {"type": "string"}, "role": {"type": "string", "enum": ["client", "consultant", "admin"]}, "client_id": {"$ref": "#/components/schemas/NullableID"}, "phone": {"type": "string", "nullable": true}, "consultant_id": {"$ref": "#/components/schemas/NullableID"}, "bio": {"type": "string", "nullable": true}}},
+      "ProfileUpdate": {"type": "object", "additionalProperties": false, "properties": {"name": {"type": "string", "nullable": true, "minLength": 1, "maxLength": 200}, "phone": {"type": "string", "nullable": true, "maxLength": 50}, "bio": {"type": "string", "nullable": true, "maxLength": 10000}}},
+      "AddressInput": {"type": "object", "additionalProperties": false, "required": ["address_line"], "properties": {"address_line": {"type": "string", "minLength": 1, "maxLength": 1000}, "label": {"type": "string", "nullable": true, "maxLength": 100, "description": "Omitted/null clears label; empty string is distinct from null"}}},
+      "Address": {"type": "object", "required": ["client_address_id", "client_id", "address_line", "label"], "properties": {"client_address_id": {"$ref": "#/components/schemas/ID"}, "client_id": {"$ref": "#/components/schemas/ID"}, "address_line": {"type": "string"}, "label": {"type": "string", "nullable": true}}},
+      "ConsultantInput": {"type": "object", "additionalProperties": false, "required": ["user_id"], "properties": {"user_id": {"$ref": "#/components/schemas/ID"}, "bio": {"type": "string", "maxLength": 10000, "default": ""}}},
+      "Consultant": {"type": "object", "required": ["consultant_id", "user_id", "name", "bio", "is_active"], "properties": {"consultant_id": {"$ref": "#/components/schemas/ID"}, "user_id": {"$ref": "#/components/schemas/ID"}, "name": {"type": "string"}, "bio": {"type": "string", "nullable": true}, "is_active": {"type": "boolean"}}},
+      "ActiveInput": {"type": "object", "additionalProperties": false, "required": ["is_active"], "properties": {"is_active": {"type": "boolean"}}},
+      "ConsultationTypeInput": {"type": "object", "additionalProperties": false, "required": ["title", "duration_minutes", "price"], "properties": {"title": {"type": "string", "minLength": 1, "maxLength": 200}, "description": {"type": "string", "maxLength": 10000, "default": ""}, "duration_minutes": {"type": "integer", "minimum": 1, "maximum": 1440}, "price": {"$ref": "#/components/schemas/Price"}}},
+      "ConsultationType": {"type": "object", "required": ["consultation_type_id", "title", "description", "duration_minutes", "price", "is_active"], "properties": {"consultation_type_id": {"$ref": "#/components/schemas/ID"}, "title": {"type": "string"}, "description": {"type": "string"}, "duration_minutes": {"type": "integer", "minimum": 1, "maximum": 1440}, "price": {"$ref": "#/components/schemas/Price"}, "is_active": {"type": "boolean"}}},
+      "OfferingInput": {"type": "object", "additionalProperties": false, "required": ["consultation_type_id", "consultant_id", "is_active"], "properties": {"consultation_type_id": {"$ref": "#/components/schemas/ID"}, "consultant_id": {"$ref": "#/components/schemas/ID"}, "is_active": {"type": "boolean"}}},
+      "Offering": {"type": "object", "required": ["consultation_offering_id", "consultant_id", "consultation_type_id", "is_active"], "properties": {"consultation_offering_id": {"$ref": "#/components/schemas/ID"}, "consultant_id": {"$ref": "#/components/schemas/ID"}, "consultation_type_id": {"$ref": "#/components/schemas/ID"}, "is_active": {"type": "boolean"}}},
+      "WorkIntervalInput": {"type": "object", "additionalProperties": false, "required": ["starts_at", "ends_at"], "properties": {"starts_at": {"type": "string", "format": "date-time", "description": "Nonzero; strictly future on creation, may be past on update"}, "ends_at": {"type": "string", "format": "date-time", "description": "Strictly after starts_at"}}},
+      "WorkInterval": {"type": "object", "required": ["work_interval_id", "consultant_id", "starts_at", "ends_at"], "properties": {"work_interval_id": {"$ref": "#/components/schemas/ID"}, "consultant_id": {"$ref": "#/components/schemas/ID"}, "starts_at": {"type": "string", "format": "date-time"}, "ends_at": {"type": "string", "format": "date-time"}}},
+      "Slot": {"type": "object", "required": ["starts_at", "ends_at"], "properties": {"starts_at": {"type": "string", "format": "date-time"}, "ends_at": {"type": "string", "format": "date-time"}}},
+      "BookingInput": {"type": "object", "additionalProperties": false, "required": ["consultation_offering_id", "starts_at"], "properties": {"consultation_offering_id": {"$ref": "#/components/schemas/ID"}, "client_address_id": {"$ref": "#/components/schemas/NullableID"}, "starts_at": {"type": "string", "format": "date-time", "description": "Strictly in future; end derived from type duration"}}},
+      "Booking": {"type": "object", "required": ["consultation_booking_id", "client_id", "consultation_offering_id", "client_address_id", "consultant_id", "consultation_type_id", "starts_at", "ends_at", "created_at", "status", "price", "duration_minutes"], "properties": {"consultation_booking_id": {"$ref": "#/components/schemas/ID"}, "client_id": {"$ref": "#/components/schemas/ID"}, "consultation_offering_id": {"$ref": "#/components/schemas/ID"}, "client_address_id": {"$ref": "#/components/schemas/NullableID"}, "consultant_id": {"$ref": "#/components/schemas/ID"}, "consultation_type_id": {"$ref": "#/components/schemas/ID"}, "starts_at": {"type": "string", "format": "date-time"}, "ends_at": {"type": "string", "format": "date-time"}, "created_at": {"type": "string", "format": "date-time"}, "status": {"$ref": "#/components/schemas/Status"}, "price": {"$ref": "#/components/schemas/Price"}, "duration_minutes": {"type": "integer", "minimum": 1, "maximum": 1440}}},
+      "StatusInput": {"type": "object", "additionalProperties": false, "required": ["status"], "properties": {"status": {"type": "string", "enum": ["confirmed", "cancelled", "completed", "no_show"]}, "reason": {"type": "string", "nullable": true, "maxLength": 2000}}},
+      "BookingEvent": {"type": "object", "required": ["consultation_booking_status_event_id", "consultation_booking_id", "status", "occurred_at", "user_id", "reason"], "properties": {"consultation_booking_status_event_id": {"$ref": "#/components/schemas/ID"}, "consultation_booking_id": {"$ref": "#/components/schemas/ID"}, "status": {"$ref": "#/components/schemas/Status"}, "occurred_at": {"type": "string", "format": "date-time"}, "user_id": {"$ref": "#/components/schemas/NullableID"}, "reason": {"type": "string", "nullable": true}}}
+    }
+  }
+}
