@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -123,23 +125,25 @@ func TestHTTPCSRFAndOrigin(t *testing.T) {
 
 func TestHTTPStrictJSON(t *testing.T) {
 	app := fiber.New(fiber.Config{BodyLimit: httpBodyLimit, ErrorHandler: httpError})
-	app.Post("/", func(c fiber.Ctx) error {
-		var in CodeInput
-		if err := httpDecode(c, &in); err != nil {
-			return err
-		}
-		return c.JSON(in)
-	})
+	called := false
+	httpRegister(newHTTPAPI(app, httpTestService()), huma.Operation{Method: "POST", Path: "/", OperationID: "testCode"}, false,
+		func(_ context.Context, in *HTTPBody[CodeInput]) (*httpOutput[CodeInput], error) {
+			called = true
+			return httpResult(in.Body, nil)
+		})
+	guarded := NewApp(httpTestService())
+	csrf := httpCSRFTestCookie(t, guarded)
 	for _, tc := range []struct {
 		name, body, contentType string
 		status                  int
 	}{
 		{"valid", `{"email":"a@example.com","code":"123456"}`, "application/json", 200},
-		{"charset", `{}`, "application/json; charset=utf-8", 200},
-		{"unknown", `{"user_id":1}`, "application/json", 400},
-		{"purpose override", `{"purpose":"login"}`, "application/json", 400},
-		{"malformed", `{"email":`, "application/json", 400},
-		{"wrong type", `{"code":123456}`, "application/json", 400},
+		{"charset", `{"email":"a@example.com","code":"123456"}`, "application/json; charset=utf-8", 200},
+		{"missing fields", `{}`, "application/json", 422},
+		{"unknown", `{"email":"a@example.com","code":"123456","password":"private-password","secret":"private-secret"}`, "application/json", 422},
+		{"purpose override", `{"email":"a@example.com","code":"123456","purpose":"login"}`, "application/json", 422},
+		{"malformed", `{"email":"a@example.com","code":"123456","password":"private-password","secret":"private-secret",`, "application/json", 400},
+		{"wrong type", `{"email":"a@example.com","code":123456}`, "application/json", 422},
 		{"multiple objects", `{} {}`, "application/json", 400},
 		{"trailing null", `{} null`, "application/json", 400},
 		{"trailing garbage", `{} x`, "application/json", 400},
@@ -150,10 +154,43 @@ func TestHTTPStrictJSON(t *testing.T) {
 		{"missing type", `{}`, "", 415},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			request := httptest.NewRequest("POST", "/", strings.NewReader(tc.body))
+			called = false
+			request := httpUnsafeRequest("POST", "/", tc.body, csrf)
 			request.Header.Set("Content-Type", tc.contentType)
-			httpDo(t, app, request, tc.status)
+			target := app
+			if tc.name == "null" || tc.name == "array" {
+				target = guarded
+				request.URL.Path = "/api/v1/auth/verify-email"
+			}
+			response := httpDo(t, target, request, tc.status)
+			if tc.status == 200 {
+				if !called {
+					t.Fatal("typed handler was not called")
+				}
+				return
+			}
+			if called {
+				t.Fatal("invalid request reached handler")
+			}
+			code := map[int]string{400: "invalid_json", 415: "application_json_required", 422: "invalid_request"}[tc.status]
+			httpAssertSafeError(t, response, code, "a@example.com", "123456", "private-password", "private-secret")
 		})
+	}
+}
+
+func httpAssertSafeError(t *testing.T, response *http.Response, code string, secrets ...string) {
+	t.Helper()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(string(body), secret) {
+			t.Error("error response echoed submitted credentials")
+		}
+	}
+	if strings.TrimSpace(string(body)) != `{"error":"`+code+`"}` {
+		t.Fatalf("unsafe error envelope: %s", body)
 	}
 }
 
@@ -237,6 +274,16 @@ func TestHTTPGenericErrors(t *testing.T) {
 			if string(body) != tc.body || response.Header.Get("Retry-After") != tc.retry {
 				t.Fatalf("body=%s retry=%s", body, response.Header.Get("Retry-After"))
 			}
+			if tc.name != "framework" {
+				app := fiber.New()
+				httpRegister(newHTTPAPI(app, httpTestService()), huma.Operation{Method: "GET", Path: "/", OperationID: "testError"}, false,
+					func(context.Context, *struct{}) (*httpOutput[string], error) { return nil, tc.err })
+				response := httpDo(t, app, httptest.NewRequest("GET", "/", nil), tc.status)
+				body, _ := io.ReadAll(response.Body)
+				if strings.TrimSpace(string(body)) != tc.body || response.Header.Get("Retry-After") != tc.retry {
+					t.Fatalf("Huma body=%s retry=%s", body, response.Header.Get("Retry-After"))
+				}
+			}
 		})
 	}
 	app := NewApp(httpTestService())
@@ -248,25 +295,53 @@ func TestHTTPGenericErrors(t *testing.T) {
 	}
 }
 
+func TestHTTPHumaErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, code, retry string
+		err               error
+		status            int
+	}{
+		{"internal", "internal_error", "", errors.New("password=private-password code=654321 SQL=private-query"), 500},
+		{"retry", "rate_limited", "2", fmt.Errorf("private context: %w", &APIError{Status: 429, Code: "rate_limited", RetryAfter: 1100 * time.Millisecond}), 429},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := fiber.New()
+			api := newHTTPAPI(app, httpTestService())
+			httpRegister(api, huma.Operation{Method: "GET", Path: "/error", OperationID: "testError"}, false,
+				func(context.Context, *struct{}) (*struct{}, error) { return nil, tc.err })
+			response := httpDo(t, app, httptest.NewRequest("GET", "/error", nil), tc.status)
+			httpAssertSafeError(t, response, tc.code, "private-password", "654321", "private-query", "private context")
+			if response.Header.Get("Retry-After") != tc.retry {
+				t.Fatal("Huma lost retry metadata")
+			}
+		})
+	}
+}
+
 func TestHTTPCookies(t *testing.T) {
 	app := fiber.New()
-	app.Get("/", func(c fiber.Ctx) error {
-		httpSetCookie(c, sessionCookie, "opaque", time.Hour, true)
-		httpSetCookie(c, challengeCookie, "", -time.Second, true)
-		return c.SendStatus(204)
-	})
+	httpRegister(newHTTPAPI(app, httpTestService()), huma.Operation{Method: "GET", Path: "/", OperationID: "testCookies", DefaultStatus: 204}, false,
+		func(context.Context, *struct{}) (*HTTPCookieOutput, error) {
+			return &HTTPCookieOutput{Cookies: []http.Cookie{
+				httpCookie(sessionCookie, "opaque", time.Hour, true),
+				httpCookie(challengeCookie, "", -time.Second, true),
+			}}, nil
+		})
 	response := httpDo(t, app, httptest.NewRequest("GET", "/", nil), 204)
-	if len(response.Cookies()) != 2 {
+	if len(response.Header.Values("Set-Cookie")) != 2 || len(response.Cookies()) != 2 {
 		t.Fatal("missing cookies")
 	}
 	for _, cookie := range response.Cookies() {
+		if cookie.Name != sessionCookie && cookie.Name != challengeCookie {
+			t.Fatalf("unexpected cookie %q", cookie.Name)
+		}
 		if !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Path != "/" || cookie.Domain != "" {
 			t.Fatalf("unsafe cookie attributes: %+v", cookie)
 		}
-		if cookie.Name == sessionCookie && cookie.MaxAge != 3600 {
+		if cookie.Name == sessionCookie && (cookie.MaxAge != 3600 || cookie.Value != "opaque") {
 			t.Fatal("incorrect session TTL")
 		}
-		if cookie.Name == challengeCookie && (cookie.MaxAge >= 0 || cookie.Expires.After(time.Now())) {
+		if cookie.Name == challengeCookie && (cookie.Value != "" || cookie.MaxAge >= 0 || cookie.Expires.After(time.Now())) {
 			t.Fatal("challenge not cleared")
 		}
 	}
@@ -282,5 +357,41 @@ func TestHTTPPositiveIDs(t *testing.T) {
 	}
 	if id, err := httpPositiveID("9223372036854775807"); err != nil || id != 9223372036854775807 {
 		t.Fatal("valid int64 rejected")
+	}
+}
+
+func TestHTTPJSONInt64IDs(t *testing.T) {
+	app := fiber.New()
+	var got BookingInput
+	httpRegister(newHTTPAPI(app, httpTestService()), huma.Operation{Method: "POST", Path: "/", OperationID: "testBookingIDs", DefaultStatus: 204}, false,
+		func(_ context.Context, in *HTTPBody[BookingInput]) (*struct{}, error) {
+			got = in.Body
+			return nil, nil
+		})
+	for _, tc := range []struct {
+		name, offering, address string
+		status                  int
+	}{
+		{"max", "9223372036854775807", "9223372036854775807", 204},
+		{"offering overflow", "9223372036854775808", "1", 422},
+		{"address overflow", "1", "9223372036854775808", 422},
+		{"offering underflow", "-9223372036854775809", "1", 422},
+		{"address underflow", "1", "-9223372036854775809", 422},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got = BookingInput{}
+			body := fmt.Sprintf(`{"consultation_offering_id":%s,"client_address_id":%s,"starts_at":"2026-11-20T10:00:00Z"}`, tc.offering, tc.address)
+			response := httpDo(t, app, httpUnsafeRequest("POST", "/", body, nil), tc.status)
+			if tc.status == 204 {
+				if got.OfferingID != 9223372036854775807 || got.AddressID == nil || *got.AddressID != 9223372036854775807 {
+					t.Fatalf("int64 IDs lost precision: %+v", got)
+				}
+			} else {
+				httpAssertSafeError(t, response, "invalid_request")
+				if got.OfferingID != 0 {
+					t.Fatal("overflow reached handler")
+				}
+			}
+		})
 	}
 }

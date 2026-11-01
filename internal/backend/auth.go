@@ -18,14 +18,14 @@ import (
 type RegisterInput struct {
 	Name     string `json:"name"`
 	Email    string `json:"email"`
-	Password string `json:"password"`
+	Password string `json:"password" writeOnly:"true" doc:"12-128 bytes, validated by the service."`
 	Phone    string `json:"phone"`
 }
 
 // CodeInput deliberately has no user ID or purpose override.
 type CodeInput struct {
 	Email string `json:"email"`
-	Code  string `json:"code"`
+	Code  string `json:"code" pattern:"^[0-9]{6}$" writeOnly:"true"`
 }
 
 func canonicalEmail(email string) (string, error) {

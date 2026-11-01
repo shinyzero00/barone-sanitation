@@ -3,6 +3,7 @@ module github.com/shinyzero00/barone-sanitation
 go 1.26.0
 
 require (
+	github.com/danielgtaylor/huma/v2 v2.40.0
 	github.com/gofiber/fiber/v3 v3.7.0
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/jmoiron/sqlx v1.4.0
@@ -11,6 +12,8 @@ require (
 )
 
 require (
+	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
+	github.com/gofiber/fiber/v2 v2.52.16 // indirect
 	github.com/gofiber/schema v1.9.3 // indirect
 	github.com/gofiber/utils/v2 v2.6.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -20,6 +23,7 @@ require (
 	github.com/klauspost/compress v1.20.4 // indirect
 	github.com/mattn/go-colorable v0.1.16 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
+	github.com/mattn/go-runewidth v0.0.31 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/molecule-man/go-brrr v1.3.1 // indirect
 	github.com/philhofer/fwd v1.2.1 // indirect

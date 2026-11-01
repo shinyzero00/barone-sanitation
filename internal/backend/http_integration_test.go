@@ -37,6 +37,11 @@ func (b *httpTestBrowser) request(t *testing.T, method, path string, in any, sta
 		}
 		body = string(encoded)
 	}
+	return b.requestRaw(t, method, path, body, status, out)
+}
+
+func (b *httpTestBrowser) requestRaw(t *testing.T, method, path, body string, status int, out any) *http.Response {
+	t.Helper()
 	request := httpUnsafeRequest(method, path, body, b.csrf)
 	for _, cookie := range b.cookies {
 		request.AddCookie(cookie)
@@ -108,8 +113,28 @@ func TestHTTPAuthEndToEnd(t *testing.T) {
 	if profile.UserID != id || profile.Role != "client" {
 		t.Fatal("wrong authenticated profile")
 	}
+	var unchanged Profile
+	b.request(t, "PATCH", "/api/v1/me", map[string]any{"name": nil, "phone": nil, "bio": nil}, 200, &unchanged)
+	if unchanged.Name != profile.Name || unchanged.Phone == nil || profile.Phone == nil || *unchanged.Phone != *profile.Phone || unchanged.Bio != nil {
+		t.Fatal("null PATCH fields changed profile")
+	}
+	for _, tc := range []struct {
+		name, body string
+		status     int
+		code       string
+	}{
+		{"null", "null", 400, "invalid_json"},
+		{"array", "[]", 400, "invalid_json"},
+		{"unknown", `{"password":"logout-secret"}`, 422, "invalid_request"},
+	} {
+		t.Run("logout "+tc.name, func(t *testing.T) {
+			response := b.requestRaw(t, "POST", "/api/v1/auth/logout", tc.body, tc.status, nil)
+			httpAssertSafeError(t, response, tc.code, "logout-secret")
+			b.request(t, "GET", "/api/v1/me", nil, 200, nil)
+		})
+	}
 	session := b.cookies[sessionCookie]
-	b.request(t, "POST", "/api/v1/auth/logout", nil, 204, nil)
+	b.request(t, "POST", "/api/v1/auth/logout", struct{}{}, 204, nil)
 	b.cookies[sessionCookie] = session
 	b.request(t, "GET", "/api/v1/me", nil, 401, nil)
 	delete(b.cookies, sessionCookie)
@@ -131,6 +156,8 @@ func TestHTTPAuthEndToEnd(t *testing.T) {
 	if !strings.Contains(strings.Join(buckets, ","), "http") || !strings.Contains(strings.Join(buckets, ","), "verify") {
 		t.Fatal("missing HTTP rate budgets")
 	}
+	b.request(t, "POST", "/api/v1/auth/logout", nil, 204, nil)
+	b.request(t, "GET", "/api/v1/me", nil, 401, nil)
 }
 
 func TestHTTPOwnershipSchedulingAndStatus(t *testing.T) {
@@ -147,6 +174,17 @@ func TestHTTPOwnershipSchedulingAndStatus(t *testing.T) {
 	}
 	var c Consultant
 	admin.request(t, "POST", "/api/v1/admin/consultants", map[string]any{"user_id": consultantID, "bio": "A consultant"}, 201, &c)
+	activationPath := fmt.Sprintf("/api/v1/admin/consultants/%d", c.ID)
+	for _, body := range []string{`{}`, `{"is_active":null}`} {
+		response := admin.requestRaw(t, "PATCH", activationPath, body, 422, nil)
+		httpAssertSafeError(t, response, "invalid_request")
+	}
+	admin.request(t, "PATCH", activationPath, map[string]bool{"is_active": false}, 204, nil)
+	var active bool
+	if err := s.DB.GetContext(t.Context(), &active, `SELECT is_active FROM consultants WHERE consultant_id=$1`, c.ID); err != nil || active {
+		t.Fatalf("explicit false was not persisted: active=%v err=%v", active, err)
+	}
+	admin.request(t, "PATCH", activationPath, map[string]bool{"is_active": true}, 204, nil)
 	var typ ConsultationType
 	admin.request(t, "POST", "/api/v1/admin/consultation-types", ConsultationTypeInput{Title: "Visit", DurationMinutes: 60, Price: "25.00"}, 201, &typ)
 	var offering Offering
@@ -164,12 +202,46 @@ func TestHTTPOwnershipSchedulingAndStatus(t *testing.T) {
 	}
 	var address Address
 	client.request(t, "POST", "/api/v1/addresses", AddressInput{AddressLine: "123 Main Street"}, 201, &address)
+	if address.Label != nil {
+		t.Fatal("null optional label was not preserved")
+	}
+	var unlabeled Address
+	client.request(t, "POST", "/api/v1/addresses", map[string]string{"address_line": "456 Main Street"}, 201, &unlabeled)
+	if unlabeled.Label != nil {
+		t.Fatal("omitted label was not optional")
+	}
+	deletePath := fmt.Sprintf("/api/v1/addresses/%d", unlabeled.ID)
+	for _, tc := range []struct {
+		body   string
+		status int
+		code   string
+	}{
+		{"null", 400, "invalid_json"},
+		{"[]", 400, "invalid_json"},
+		{`{"password":"delete-secret"}`, 422, "invalid_request"},
+	} {
+		response := client.requestRaw(t, "DELETE", deletePath, tc.body, tc.status, nil)
+		httpAssertSafeError(t, response, tc.code, "delete-secret")
+	}
+	client.request(t, "DELETE", deletePath, struct{}{}, 204, nil)
 	addressPath := fmt.Sprintf("/api/v1/addresses/%d", address.ID)
 	other.request(t, "GET", addressPath, nil, 404, nil)
 	other.request(t, "PUT", addressPath, AddressInput{AddressLine: "Stolen"}, 404, nil)
-	other.request(t, "DELETE", addressPath, nil, 404, nil)
+	other.request(t, "DELETE", addressPath, struct{}{}, 404, nil)
 	var booking Booking
 	client.request(t, "POST", "/api/v1/bookings", BookingInput{OfferingID: offering.ID, AddressID: &address.ID, StartsAt: start}, 201, &booking)
+	for i, addressField := range []map[string]any{{}, {"client_address_id": nil}} {
+		in := map[string]any{"consultation_offering_id": offering.ID, "starts_at": start.Add(time.Duration(i+1) * time.Hour)}
+		for key, value := range addressField {
+			in[key] = value
+		}
+		var optional Booking
+		client.request(t, "POST", "/api/v1/bookings", in, 201, &optional)
+		if optional.AddressID != nil {
+			t.Fatal("optional booking address was not nil")
+		}
+		client.request(t, "POST", fmt.Sprintf("/api/v1/bookings/%d/status", optional.ID), map[string]string{"status": "cancelled"}, 200, nil)
+	}
 	path := fmt.Sprintf("/api/v1/bookings/%d", booking.ID)
 	other.request(t, "GET", path, nil, 404, nil)
 	other.request(t, "GET", path+"/events", nil, 404, nil)
@@ -180,7 +252,7 @@ func TestHTTPOwnershipSchedulingAndStatus(t *testing.T) {
 	if booking.Status != "confirmed" {
 		t.Fatal("status not updated")
 	}
-	consultant.request(t, "DELETE", fmt.Sprintf("%s/%d", intervalPath, interval.ID), nil, 409, nil)
+	consultant.request(t, "DELETE", fmt.Sprintf("%s/%d", intervalPath, interval.ID), struct{}{}, 409, nil)
 	client.request(t, "POST", path+"/status", map[string]string{"status": "cancelled"}, 200, &booking)
 	client.request(t, "POST", path+"/status", map[string]string{"status": "cancelled"}, 409, nil)
 	var events []BookingEvent
@@ -197,7 +269,10 @@ func TestHTTPOwnershipSchedulingAndStatus(t *testing.T) {
 	for _, invalid := range []string{"0", "-1", "+1", "9223372036854775808"} {
 		client.request(t, "GET", "/api/v1/bookings/"+url.PathEscape(invalid), nil, 422, nil)
 	}
-	consultant.request(t, "DELETE", fmt.Sprintf("%s/%d", intervalPath, interval.ID), nil, 204, nil)
+	client.request(t, "GET", "/api/v1/bookings/9223372036854775807", nil, 404, nil)
+	consultant.request(t, "DELETE", fmt.Sprintf("%s/%d", intervalPath, interval.ID), struct{}{}, 204, nil)
+	client.request(t, "POST", "/api/v1/addresses", map[string]string{"address_line": "Empty body delete"}, 201, &unlabeled)
+	client.request(t, "DELETE", fmt.Sprintf("/api/v1/addresses/%d", unlabeled.ID), nil, 204, nil)
 }
 
 func TestHTTPRateBudgetsAndSQLTimeout(t *testing.T) {
@@ -217,7 +292,13 @@ func TestHTTPRateBudgetsAndSQLTimeout(t *testing.T) {
 	}
 	browser := newHTTPBrowser(t, app)
 	for _, path := range []string{"verify-email", "login/verify", "reset-password"} {
-		browser.request(t, "POST", "/api/v1/auth/"+path, CodeInput{Email: "unknown@http.test", Code: "123456"}, 429, nil)
+		for _, body := range []string{`{}`, `{"email":"unknown@http.test","code":"123456","password":"budget-secret",`} {
+			response := browser.requestRaw(t, "POST", "/api/v1/auth/"+path, body, 429, nil)
+			httpAssertSafeError(t, response, "rate_limited", "123456", "budget-secret")
+			if response.Header.Get("Retry-After") == "" {
+				t.Fatal("verification budget lost retry header")
+			}
+		}
 	}
 	// Exhausting the pool verifies the HTTP standard-context deadline reaches SQL.
 	s.DB.SetMaxOpenConns(1)
@@ -232,5 +313,26 @@ func TestHTTPRateBudgetsAndSQLTimeout(t *testing.T) {
 	httpDo(t, app, httptest.NewRequest("GET", "/healthz", nil), 503)
 	if time.Since(started) > time.Second {
 		t.Fatal("SQL ignored HTTP deadline")
+	}
+}
+
+func TestHTTPAuthenticationBeforeValidation(t *testing.T) {
+	s, _ := authFixture(t)
+	s.Config.PublicOrigin = httpTestOrigin
+	browser := newHTTPBrowser(t, NewApp(s))
+	for _, tc := range []struct {
+		method, path, body string
+	}{
+		{"GET", "/api/v1/bookings/not-an-id", ""},
+		{"GET", "/api/v1/bookings?from=invalid", ""},
+		{"PATCH", "/api/v1/me", `{"name":123,"password":"auth-secret"}`},
+		{"PATCH", "/api/v1/me", `{"name":"private-name","password":"auth-secret",`},
+		{"POST", "/api/v1/bookings", `{}`},
+		{"DELETE", "/api/v1/addresses/not-an-id", `{}`},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			response := browser.requestRaw(t, tc.method, tc.path, tc.body, 401, nil)
+			httpAssertSafeError(t, response, "unauthenticated", "auth-secret", "private-name")
+		})
 	}
 }

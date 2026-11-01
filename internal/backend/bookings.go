@@ -23,8 +23,8 @@ type Booking struct {
 }
 
 type BookingInput struct {
-	OfferingID int64     `json:"consultation_offering_id"`
-	AddressID  *int64    `json:"client_address_id"`
+	OfferingID int64     `json:"consultation_offering_id" minimum:"1"`
+	AddressID  *int64    `json:"client_address_id" required:"false" minimum:"1"`
 	StartsAt   time.Time `json:"starts_at"`
 }
 

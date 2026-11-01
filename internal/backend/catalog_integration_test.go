@@ -31,7 +31,7 @@ func TestCatalogProfilesAndAddressOwnership(t *testing.T) {
 	owner.request(t, "PATCH", "/api/v1/me", map[string]string{"name": " "}, 422, nil)
 	for _, field := range []string{"role", "user_id", "client_id", "email"} {
 		t.Run("profile_rejects_"+field, func(t *testing.T) {
-			owner.request(t, "PATCH", "/api/v1/me", map[string]any{field: "admin"}, 400, nil)
+			owner.request(t, "PATCH", "/api/v1/me", map[string]any{field: "admin"}, 422, nil)
 		})
 	}
 	var address Address
@@ -66,7 +66,7 @@ func TestCatalogProfilesAndAddressOwnership(t *testing.T) {
 		t.Fatalf("updated address = %+v", address)
 	}
 	owner.request(t, "POST", "/api/v1/addresses", AddressInput{}, 422, nil)
-	owner.request(t, "POST", "/api/v1/addresses", map[string]any{"address_line": "Injected", "client_id": clientID}, 400, nil)
+	owner.request(t, "POST", "/api/v1/addresses", map[string]any{"address_line": "Injected", "client_id": clientID}, 422, nil)
 	owner.request(t, "DELETE", path, nil, 204, nil)
 	owner.request(t, "GET", path, nil, 404, nil)
 	owner.request(t, "PUT", path, AddressInput{AddressLine: "Gone"}, 404, nil)
@@ -97,7 +97,7 @@ func TestCatalogAdministrationAndImmutableReplacement(t *testing.T) {
 		t.Run("registration_rejects_"+role, func(t *testing.T) {
 			guest.request(t, "POST", "/api/v1/auth/register", map[string]string{
 				"name": "Escalation", "email": role + "@escalation.test", "password": authTestPassword, "phone": "12345", "role": role,
-			}, 400, nil)
+			}, 422, nil)
 		})
 	}
 	var escalations int

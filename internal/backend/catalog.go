@@ -85,9 +85,9 @@ type Profile struct {
 }
 
 type ProfileUpdate struct {
-	Name  *string `json:"name"`
-	Phone *string `json:"phone"`
-	Bio   *string `json:"bio"`
+	Name  *string `json:"name" required:"false" minLength:"1" maxLength:"200"`
+	Phone *string `json:"phone" required:"false" maxLength:"50"`
+	Bio   *string `json:"bio" required:"false" maxLength:"10000"`
 }
 
 const profileSelect = `SELECT u.user_id,u.name,u.role,c.client_id,c.phone,k.consultant_id,k.bio
@@ -142,8 +142,8 @@ type Address struct {
 }
 
 type AddressInput struct {
-	AddressLine string  `json:"address_line"`
-	Label       *string `json:"label"`
+	AddressLine string  `json:"address_line" minLength:"1" maxLength:"1000"`
+	Label       *string `json:"label" required:"false" maxLength:"100"`
 }
 
 func (s *Service) ListAddresses(ctx context.Context, actor Actor) ([]Address, error) {
@@ -277,10 +277,10 @@ type ConsultationType struct {
 }
 
 type ConsultationTypeInput struct {
-	Title           string `json:"title"`
-	Description     string `json:"description"`
-	DurationMinutes int    `json:"duration_minutes"`
-	Price           string `json:"price"`
+	Title           string `json:"title" minLength:"1" maxLength:"200"`
+	Description     string `json:"description" required:"false" nullable:"true" maxLength:"10000"`
+	DurationMinutes int    `json:"duration_minutes" minimum:"1" maximum:"1440"`
+	Price           string `json:"price" pattern:"^(0|[1-9][0-9]{0,9})(\\.[0-9]{1,2})?$"`
 }
 
 var domainPrice = regexp.MustCompile(`^(0|[1-9][0-9]{0,9})(\.[0-9]{1,2})?$`)
