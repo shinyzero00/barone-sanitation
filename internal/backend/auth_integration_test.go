@@ -81,7 +81,7 @@ func authFixture(t *testing.T) (*Service, *authRecordingMailer) {
 		t.Fatal(err)
 	}
 	m := &authRecordingMailer{codes: make(map[string]string)}
-	s := &Service{DB: db, Mailer: m, Config: Config{
+	s := &Service{DB: db, OTPProvider: m, Config: Config{
 		HMACSecret: bytes.Repeat([]byte{42}, 32), CodeTTL: 10 * time.Minute, MaxAttempts: 5,
 		ResendInterval: time.Minute, Lockout: 15 * time.Minute, SessionTTL: time.Hour,
 		RequestTimeout: 5 * time.Second, RateWindow: time.Minute, RateLimit: 1000,
@@ -563,7 +563,7 @@ func TestAuthSMTPFailureDoesNotRevokeReplacement(t *testing.T) {
 
 func TestAuthNilMailerFailsClosed(t *testing.T) {
 	s, _ := authFixture(t)
-	s.Mailer = nil
+	s.OTPProvider = nil
 	_, err := s.Register(t.Context(), RegisterInput{Name: "Test", Email: "nil-mailer@example.com", Password: authTestPassword, Phone: "1234567890"}, authTestIP)
 	authWantStatus(t, err, 503)
 	var revoked bool
@@ -582,7 +582,7 @@ func TestAuthDistributedRateLimitAndUnknownEmail(t *testing.T) {
 	}
 	authWantStatus(t, s.RequestCode(t.Context(), "unknown@example.com", "login", authTestIP), 422)
 	s.Config.RateLimit = 3
-	other := &Service{DB: s.DB, Config: s.Config, Mailer: s.Mailer}
+	other := &Service{DB: s.DB, Config: s.Config, OTPProvider: s.OTPProvider}
 	var successes atomic.Int32
 	errs := make(chan error, 12)
 	var wg sync.WaitGroup

@@ -195,10 +195,10 @@ func (s *Service) deliverCode(ctx context.Context, c issuedCode) error {
 		return nil
 	}
 	var err error
-	if s.Mailer == nil {
-		err = errors.New("mailer unavailable")
+	if s.OTPProvider == nil {
+		err = errors.New("OTP provider unavailable")
 	} else {
-		err = s.Mailer.SendCode(ctx, c.Email, c.Purpose, c.Code)
+		err = s.OTPProvider.SendCode(ctx, c.Email, c.Purpose, c.Code)
 	}
 	if err == nil {
 		return nil

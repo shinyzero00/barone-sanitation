@@ -83,7 +83,11 @@ func run(args []string) error {
 		slog.Info("verified account promoted to administrator")
 		return nil
 	}
-	s := &backend.Service{DB: db, Config: cfg, Mailer: &backend.SMTPMailer{Config: cfg}}
+	var otpProvider backend.OTPProvider = &backend.SMTPMailer{Config: cfg}
+	if cfg.OTPProvider == "console" {
+		otpProvider = &backend.ConsoleOTPProvider{Writer: os.Stdout}
+	}
+	s := &backend.Service{DB: db, Config: cfg, OTPProvider: otpProvider}
 	app := backend.NewApp(s)
 	done := make(chan error, 1)
 	go func() { done <- app.Listen(cfg.ListenAddress) }()

@@ -10,12 +10,12 @@ import (
 )
 
 type Service struct {
-	DB     *sqlx.DB
-	Config Config
-	Mailer Mailer
+	DB          *sqlx.DB
+	Config      Config
+	OTPProvider OTPProvider
 }
 
-type Mailer interface {
+type OTPProvider interface {
 	SendCode(context.Context, string, string, string) error
 }
 

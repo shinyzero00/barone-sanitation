@@ -161,7 +161,7 @@ func TestServerSmoke(t *testing.T) {
 		"LISTEN_ADDRESS="+address,
 		"PUBLIC_ORIGIN=https://server.test",
 		"OTP_HMAC_SECRET="+base64.StdEncoding.EncodeToString(secret[:]),
-		"SMTP_ADDRESS=127.0.0.1:1", "SMTP_FROM=test@server.test",
+		"OTP_PROVIDER=console", "SMTP_ADDRESS=", "SMTP_FROM=",
 		"SMTP_USERNAME=", "SMTP_PASSWORD=", "TRUSTED_PROXIES=",
 	)
 	output := &serverTestOutput{}

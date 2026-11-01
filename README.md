@@ -10,6 +10,7 @@
 | `OTP_MAX_ATTEMPTS` | `5` | Maximum failed code checks. |
 | `OTP_RESEND_INTERVAL` | `1m` | Code regeneration cooldown. |
 | `OTP_LOCKOUT` | `15m` | Exhausted-attempt lockout, with an effective minimum of 15 minutes. |
+| `OTP_PROVIDER` | `smtp` | OTP delivery provider: `smtp` or development-only `console`, which prints codes to stdout. |
 | `SESSION_TTL` | `720h` | Session and cookie lifetime. |
 | `REQUEST_TIMEOUT` | `10s` | HTTP read/write timeout and request-context deadline. |
 | `SMTP_TIMEOUT` | `10s` | SMTP operation timeout, also bounded by the request deadline. |
@@ -17,8 +18,8 @@
 | `RATE_LIMIT` | `30` | Requests allowed per IP per bucket per window. |
 | `SLOT_STEP` | `15m` | Available-slot grid spacing. |
 | `TRUSTED_PROXIES` | Empty | Comma-separated proxy IPs/CIDRs trusted for `X-Forwarded-For`. |
-| `SMTP_ADDRESS` | Required | SMTP `host:port`; implicit TLS on 465, mandatory STARTTLS otherwise. |
-| `SMTP_FROM` | Required | Sender mailbox, optionally with a display name. |
+| `SMTP_ADDRESS` | Required for `smtp` | SMTP `host:port`; implicit TLS on 465, mandatory STARTTLS otherwise. |
+| `SMTP_FROM` | Required for `smtp` | Sender mailbox, optionally with a display name. |
 | `SMTP_USERNAME` | Empty | SMTP username; set together with the password or leave both empty. |
 | `SMTP_PASSWORD` | Empty | SMTP password. |
 | `DATABASE_TEST_URL` | Empty | Disposable PostgreSQL database for integration tests that create/drop isolated schemas. |

@@ -4,16 +4,52 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/mail"
 	"net/smtp"
 	"strings"
+	"sync"
 	"time"
 )
+
+type ConsoleOTPProvider struct {
+	Writer io.Writer
+	mu     sync.Mutex
+}
+
+func (p *ConsoleOTPProvider) SendCode(ctx context.Context, email, purpose, code string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if p.Writer == nil {
+		return fmt.Errorf("console OTP writer unavailable")
+	}
+	to, err := canonicalEmail(email)
+	if err != nil {
+		return fmt.Errorf("invalid OTP recipient")
+	}
+	if _, err := validateCode(CodeInput{Email: email, Code: code}); err != nil {
+		return fmt.Errorf("invalid OTP code")
+	}
+	switch purpose {
+	case "verify_email", "login", "reset_password":
+	default:
+		return fmt.Errorf("invalid OTP purpose")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, err = fmt.Fprintf(p.Writer, "OTP email=%s purpose=%s code=%s\n", to, purpose, code)
+	return err
+}
+
+var _ OTPProvider = (*ConsoleOTPProvider)(nil)
 
 // SMTPMailer supports implicit TLS on port 465 and mandatory STARTTLS elsewhere.
 // Construct it as &SMTPMailer{Config: config}; plaintext delivery is never allowed.
 type SMTPMailer struct{ Config Config }
+
+var _ OTPProvider = (*SMTPMailer)(nil)
 
 func (m *SMTPMailer) SendCode(ctx context.Context, email, purpose, code string) error {
 	to, err := canonicalEmail(email)

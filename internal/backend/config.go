@@ -28,6 +28,7 @@ type Config struct {
 	RateLimit      int
 	SlotStep       time.Duration
 	TrustedProxies []string
+	OTPProvider    string
 	SMTPAddress    string
 	SMTPUsername   string
 	SMTPPassword   string
@@ -38,6 +39,7 @@ func LoadConfig() (Config, error) {
 	c := Config{
 		DatabaseURL: os.Getenv("DATABASE_URL"), ListenAddress: env("LISTEN_ADDRESS", "127.0.0.1:8080"),
 		PublicOrigin: env("PUBLIC_ORIGIN", "https://localhost:8080"),
+		OTPProvider:  env("OTP_PROVIDER", "smtp"),
 		SMTPAddress:  os.Getenv("SMTP_ADDRESS"), SMTPUsername: os.Getenv("SMTP_USERNAME"),
 		SMTPPassword: os.Getenv("SMTP_PASSWORD"), SMTPFrom: os.Getenv("SMTP_FROM"),
 	}
@@ -78,19 +80,24 @@ func LoadConfig() (Config, error) {
 			return c, fmt.Errorf("invalid %s", item.key)
 		}
 	}
-	if c.SMTPAddress == "" || c.SMTPFrom == "" {
-		return c, fmt.Errorf("SMTP_ADDRESS and SMTP_FROM are required")
+	if c.OTPProvider != "smtp" && c.OTPProvider != "console" {
+		return c, fmt.Errorf("OTP_PROVIDER must be smtp or console")
 	}
-	host, port, err := net.SplitHostPort(c.SMTPAddress)
-	portNumber, portErr := strconv.Atoi(port)
-	if err != nil || host == "" || portErr != nil || portNumber < 1 || portNumber > 65535 {
-		return c, fmt.Errorf("invalid SMTP_ADDRESS")
-	}
-	if _, err := mail.ParseAddress(c.SMTPFrom); err != nil || strings.ContainsAny(c.SMTPFrom, "\r\n") {
-		return c, fmt.Errorf("invalid SMTP_FROM")
-	}
-	if (c.SMTPUsername == "") != (c.SMTPPassword == "") {
-		return c, fmt.Errorf("SMTP_USERNAME and SMTP_PASSWORD must be set together")
+	if c.OTPProvider == "smtp" {
+		if c.SMTPAddress == "" || c.SMTPFrom == "" {
+			return c, fmt.Errorf("SMTP_ADDRESS and SMTP_FROM are required")
+		}
+		host, port, err := net.SplitHostPort(c.SMTPAddress)
+		portNumber, portErr := strconv.Atoi(port)
+		if err != nil || host == "" || portErr != nil || portNumber < 1 || portNumber > 65535 {
+			return c, fmt.Errorf("invalid SMTP_ADDRESS")
+		}
+		if _, err := mail.ParseAddress(c.SMTPFrom); err != nil || strings.ContainsAny(c.SMTPFrom, "\r\n") {
+			return c, fmt.Errorf("invalid SMTP_FROM")
+		}
+		if (c.SMTPUsername == "") != (c.SMTPPassword == "") {
+			return c, fmt.Errorf("SMTP_USERNAME and SMTP_PASSWORD must be set together")
+		}
 	}
 	if raw := os.Getenv("TRUSTED_PROXIES"); raw != "" {
 		for _, proxy := range strings.Split(raw, ",") {

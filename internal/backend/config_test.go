@@ -14,6 +14,7 @@ func configTestEnv(t *testing.T) {
 	for _, key := range []string{
 		"DATABASE_URL", "LISTEN_ADDRESS", "PUBLIC_ORIGIN", "OTP_HMAC_SECRET",
 		"OTP_TTL", "OTP_MAX_ATTEMPTS", "OTP_RESEND_INTERVAL", "OTP_LOCKOUT",
+		"OTP_PROVIDER",
 		"SESSION_TTL", "REQUEST_TIMEOUT", "SMTP_TIMEOUT", "RATE_WINDOW",
 		"RATE_LIMIT", "SLOT_STEP", "TRUSTED_PROXIES", "SMTP_ADDRESS",
 		"SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM",
@@ -35,7 +36,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	want := Config{
 		DatabaseURL: "postgres://config@test.invalid/config", ListenAddress: "127.0.0.1:8080",
 		PublicOrigin: "https://localhost:8080", HMACSecret: []byte(strings.Repeat("s", 32)),
-		CodeTTL: 10 * time.Minute, MaxAttempts: 5, ResendInterval: time.Minute,
+		OTPProvider: "smtp",
+		CodeTTL:     10 * time.Minute, MaxAttempts: 5, ResendInterval: time.Minute,
 		Lockout: 15 * time.Minute, SessionTTL: 720 * time.Hour,
 		RequestTimeout: 10 * time.Second, SMTPTimeout: 10 * time.Second,
 		RateWindow: time.Minute, RateLimit: 30, SlotStep: 15 * time.Minute,
@@ -54,6 +56,7 @@ func TestLoadConfigOverrides(t *testing.T) {
 		"OTP_HMAC_SECRET": base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 48))),
 		"OTP_TTL":         "2m", "OTP_MAX_ATTEMPTS": "1", "OTP_RESEND_INTERVAL": "3s",
 		"OTP_LOCKOUT": "4m", "SESSION_TTL": "5h", "REQUEST_TIMEOUT": "6s",
+		"OTP_PROVIDER": "smtp",
 		"SMTP_TIMEOUT": "7s", "RATE_WINDOW": "8m", "RATE_LIMIT": "9", "SLOT_STEP": "10m",
 		"TRUSTED_PROXIES": " 127.0.0.1, 10.0.0.0/8 , ::1, 2001:db8::/32 ",
 		"SMTP_ADDRESS":    "[::1]:465", "SMTP_FROM": "Sender <sender@test.invalid>",
@@ -68,7 +71,8 @@ func TestLoadConfigOverrides(t *testing.T) {
 	want := Config{
 		DatabaseURL: "postgres://other@test.invalid/other", ListenAddress: "127.0.0.1:9090",
 		PublicOrigin: "https://app.test.invalid:8443", HMACSecret: []byte(strings.Repeat("k", 48)),
-		CodeTTL: 2 * time.Minute, MaxAttempts: 1, ResendInterval: 3 * time.Second,
+		OTPProvider: "smtp",
+		CodeTTL:     2 * time.Minute, MaxAttempts: 1, ResendInterval: 3 * time.Second,
 		Lockout: 4 * time.Minute, SessionTTL: 5 * time.Hour,
 		RequestTimeout: 6 * time.Second, SMTPTimeout: 7 * time.Second,
 		RateWindow: 8 * time.Minute, RateLimit: 9, SlotStep: 10 * time.Minute,
@@ -97,6 +101,7 @@ func TestLoadConfigValidation(t *testing.T) {
 		{"origin_query", "PUBLIC_ORIGIN", "https://app.test.invalid?key=value", "PUBLIC_ORIGIN"},
 		{"origin_fragment", "PUBLIC_ORIGIN", "https://app.test.invalid#fragment", "PUBLIC_ORIGIN"},
 		{"origin_credentials", "PUBLIC_ORIGIN", "https://user:pass@app.test.invalid", "PUBLIC_ORIGIN"},
+		{"otp_provider_invalid", "OTP_PROVIDER", "stdout", "OTP_PROVIDER must be smtp or console"},
 		{"proxy_invalid_ip", "TRUSTED_PROXIES", "999.0.0.1", "invalid trusted proxy"},
 		{"proxy_invalid_cidr", "TRUSTED_PROXIES", "10.0.0.0/33", "invalid trusted proxy"},
 		{"proxy_invalid_ipv6_cidr", "TRUSTED_PROXIES", "2001:db8::/129", "invalid trusted proxy"},
@@ -151,5 +156,22 @@ func TestLoadConfigValidation(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestLoadConfigConsoleOTPProvider(t *testing.T) {
+	configTestEnv(t)
+	t.Setenv("OTP_PROVIDER", "console")
+	t.Setenv("SMTP_ADDRESS", "")
+	t.Setenv("SMTP_FROM", "")
+	t.Setenv("SMTP_USERNAME", "ignored")
+	t.Setenv("TRUSTED_PROXIES", "127.0.0.1")
+
+	got, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OTPProvider != "console" || !reflect.DeepEqual(got.TrustedProxies, []string{"127.0.0.1"}) {
+		t.Fatalf("LoadConfig() = %+v", got)
 	}
 }
