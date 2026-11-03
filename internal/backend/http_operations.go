@@ -312,4 +312,15 @@ func registerHTTPOperations(api huma.API, s *Service) {
 		func(ctx context.Context, in *httpIDBody[statusChange]) (*httpOutput[Booking], error) {
 			return httpResult(s.ChangeBookingStatus(ctx, httpActor(ctx), in.ID, in.Body.Status, in.Body.Reason))
 		})
+	type consultationResult struct {
+		HTTPBody[ConsultationResultInput]
+	}
+	httpRegister(api, operation("POST", "/api/v1/bookings/{id}/result", "createConsultationResult", "Store consultation result", "Bookings", 201), true,
+		func(ctx context.Context, in *httpIDBody[ConsultationResultInput]) (*httpOutput[ConsultationResult], error) {
+			return httpResult(s.CreateConsultationResult(ctx, httpActor(ctx), in.ID, in.Body))
+		})
+	httpRegister(api, operation("GET", "/api/v1/bookings/{id}/result", "getConsultationResult", "Get consultation result", "Bookings", 200), true,
+		func(ctx context.Context, in *HTTPIDPath) (*httpOutput[ConsultationResult], error) {
+			return httpResult(s.GetConsultationResult(ctx, httpActor(ctx), in.ID))
+		})
 }

@@ -181,8 +181,12 @@ func TestHistoryMigrationRoundtrip(t *testing.T) {
 		}
 		return got
 	}
-	version(6)
+	version(7)
 	wantObjects := objects()
+	if err := migrations.Run(f.ctx, f.s.DB.DB, true); err != nil {
+		t.Fatal(err)
+	}
+	version(6)
 	if err := migrations.Run(f.ctx, f.s.DB.DB, true); err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +222,7 @@ func TestHistoryMigrationRoundtrip(t *testing.T) {
 		if err = migrations.Run(f.ctx, f.s.DB.DB, false); err != nil {
 			t.Fatal(err)
 		}
-		version(6)
+		version(7)
 		if got := objects(); !reflect.DeepEqual(got, wantObjects) {
 			t.Fatalf("schema objects differ after up: got %v, want %v", got, wantObjects)
 		}
@@ -252,7 +256,7 @@ func TestHistoryConcurrentMigration(t *testing.T) {
 	}
 	wantObjects := objects()
 	// Only this fixture's isolated schema is rolled back, including its seeded data.
-	for range 6 {
+	for range 7 {
 		if err := migrations.Run(f.ctx, f.s.DB.DB, true); err != nil {
 			t.Fatal(err)
 		}
@@ -268,8 +272,8 @@ func TestHistoryConcurrentMigration(t *testing.T) {
 			t.Errorf("concurrent migration result %d: %v", i, err)
 		}
 	}
-	if err := f.s.DB.GetContext(f.ctx, &version, versionQuery); err != nil || version != 6 {
-		t.Fatalf("migration version=%d, want 6: %v", version, err)
+	if err := f.s.DB.GetContext(f.ctx, &version, versionQuery); err != nil || version != 7 {
+		t.Fatalf("migration version=%d, want 7: %v", version, err)
 	}
 	if got := objects(); !reflect.DeepEqual(got, wantObjects) {
 		t.Fatalf("schema objects differ after concurrent up: got %v, want %v", got, wantObjects)

@@ -90,7 +90,7 @@ func TestServerMigrationsAndAdmin(t *testing.T) {
 		if err := run([]string{"migrate", "up"}); err != nil {
 			t.Fatal("migrate up failed")
 		}
-		version(6)
+		version(7)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO users (name,email,password_hash,email_verified_at) VALUES
 		('Verified','verified@server.test','unused',clock_timestamp()),
@@ -115,7 +115,7 @@ func TestServerMigrationsAndAdmin(t *testing.T) {
 	if verified != "admin" || unverified != "client" {
 		t.Fatal("admin command changed the wrong account roles")
 	}
-	for _, want := range []int64{5, 4, 3, 2, 1, 0} {
+	for _, want := range []int64{6, 5, 4, 3, 2, 1, 0} {
 		if err := run([]string{"migrate", "down"}); err != nil {
 			t.Fatal("migrate down failed")
 		}
@@ -124,7 +124,7 @@ func TestServerMigrationsAndAdmin(t *testing.T) {
 	if err := run([]string{"migrate", "up"}); err != nil {
 		t.Fatal("migrate up after rollback failed")
 	}
-	version(6)
+	version(7)
 }
 
 // Keep Fiber's startup banner bounded and private, including on failure.
