@@ -167,6 +167,10 @@ func registerHTTPOperations(api huma.API, s *Service) {
 		func(ctx context.Context, in *HTTPBody[ProfileUpdate]) (*httpOutput[Profile], error) {
 			return httpResult(s.UpdateProfile(ctx, httpActor(ctx), in.Body))
 		})
+	httpRegister(api, operation("GET", "/api/v1/me/offerings", "listMyOfferings", "List assigned consultant offerings", "Profile", 200), true,
+		func(ctx context.Context, _ *struct{}) (*httpOutput[[]AssignedOffering], error) {
+			return httpResult(s.ListMyOfferings(ctx, httpActor(ctx)))
+		})
 	httpRegister(api, operation("GET", "/api/v1/addresses", "listAddresses", "List owned addresses", "Addresses", 200), true,
 		func(ctx context.Context, _ *struct{}) (*httpOutput[[]Address], error) {
 			return httpResult(s.ListAddresses(ctx, httpActor(ctx)))
@@ -183,12 +187,12 @@ func registerHTTPOperations(api huma.API, s *Service) {
 		func(ctx context.Context, in *httpIDBody[AddressInput]) (*httpOutput[Address], error) {
 			return httpResult(s.SaveAddress(ctx, httpActor(ctx), in.ID, in.Body))
 		})
-	type deleteAddress struct {
+	type deleteByID struct {
 		HTTPIDPath
 		HTTPOptionalBody
 	}
 	httpRegister(api, operation("DELETE", "/api/v1/addresses/{id}", "deleteAddress", "Delete owned address", "Addresses", 204), true,
-		func(ctx context.Context, in *deleteAddress) (*struct{}, error) {
+		func(ctx context.Context, in *deleteByID) (*struct{}, error) {
 			return nil, s.DeleteAddress(ctx, httpActor(ctx), in.ID)
 		})
 
@@ -203,6 +207,29 @@ func registerHTTPOperations(api huma.API, s *Service) {
 	httpRegister(api, operation("GET", "/api/v1/offerings", "listOfferings", "List active offerings", "Catalog", 200), false,
 		func(ctx context.Context, _ *struct{}) (*httpOutput[[]Offering], error) {
 			return httpResult(s.ListOfferings(ctx))
+		})
+	type page struct {
+		Limit  int `query:"limit" default:"100" minimum:"1" maximum:"1000"`
+		Offset int `query:"offset" default:"0" minimum:"0"`
+	}
+	httpRegister(api, operation("GET", "/api/v1/admin/consultants", "listAdminConsultants", "List all consultants", "Administration", 200), true,
+		func(ctx context.Context, in *page) (*httpOutput[[]Consultant], error) {
+			return httpResult(s.ListAdminConsultants(ctx, httpActor(ctx), in.Limit, in.Offset))
+		})
+	httpRegister(api, operation("GET", "/api/v1/admin/consultation-types", "listAdminConsultationTypes", "List all consultation type versions", "Administration", 200), true,
+		func(ctx context.Context, in *page) (*httpOutput[[]ConsultationType], error) {
+			return httpResult(s.ListAdminConsultationTypes(ctx, httpActor(ctx), in.Limit, in.Offset))
+		})
+	httpRegister(api, operation("GET", "/api/v1/admin/offerings", "listAdminOfferings", "List all offerings", "Administration", 200), true,
+		func(ctx context.Context, in *page) (*httpOutput[[]Offering], error) {
+			return httpResult(s.ListAdminOfferings(ctx, httpActor(ctx), in.Limit, in.Offset))
+		})
+	type candidateSearch struct {
+		Email string `query:"email" required:"true" maxLength:"254"`
+	}
+	httpRegister(api, operation("GET", "/api/v1/admin/consultant-candidates", "findConsultantCandidate", "Find an existing client by email", "Administration", 200), true,
+		func(ctx context.Context, in *candidateSearch) (*httpOutput[ConsultantCandidate], error) {
+			return httpResult(s.FindConsultantCandidate(ctx, httpActor(ctx), in.Email))
 		})
 	type provisionConsultant struct {
 		UserID int64  `json:"user_id" minimum:"1"`
@@ -219,6 +246,13 @@ func registerHTTPOperations(api huma.API, s *Service) {
 		func(ctx context.Context, in *httpIDBody[activation]) (*struct{}, error) {
 			return nil, s.SetConsultantActive(ctx, httpActor(ctx), in.ID, in.Body.Active)
 		})
+	type consultantBio struct {
+		Bio string `json:"bio" maxLength:"10000"`
+	}
+	httpRegister(api, operation("PUT", "/api/v1/admin/consultants/{id}/bio", "updateConsultantBio", "Replace consultant bio", "Administration", 204), true,
+		func(ctx context.Context, in *httpIDBody[consultantBio]) (*struct{}, error) {
+			return nil, s.UpdateConsultantBio(ctx, httpActor(ctx), in.ID, in.Body.Bio)
+		})
 	httpRegister(api, operation("POST", "/api/v1/admin/consultation-types", "createConsultationType", "Create consultation type", "Administration", 201), true,
 		func(ctx context.Context, in *HTTPBody[ConsultationTypeInput]) (*httpOutput[ConsultationType], error) {
 			return httpResult(s.ReplaceConsultationType(ctx, httpActor(ctx), 0, in.Body))
@@ -226,6 +260,10 @@ func registerHTTPOperations(api huma.API, s *Service) {
 	httpRegister(api, operation("PUT", "/api/v1/admin/consultation-types/{id}", "replaceConsultationType", "Replace consultation type", "Administration", 201), true,
 		func(ctx context.Context, in *httpIDBody[ConsultationTypeInput]) (*httpOutput[ConsultationType], error) {
 			return httpResult(s.ReplaceConsultationType(ctx, httpActor(ctx), in.ID, in.Body))
+		})
+	httpRegister(api, operation("DELETE", "/api/v1/admin/consultation-types/{id}", "deactivateConsultationType", "Permanently deactivate consultation type and offerings", "Administration", 204), true,
+		func(ctx context.Context, in *deleteByID) (*struct{}, error) {
+			return nil, s.DeactivateConsultationType(ctx, httpActor(ctx), in.ID)
 		})
 	type setOffering struct {
 		TypeID       int64 `json:"consultation_type_id" minimum:"1"`

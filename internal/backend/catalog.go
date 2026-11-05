@@ -315,23 +315,30 @@ func (s *Service) ReplaceConsultationType(ctx context.Context, actor Actor, oldI
 		}
 		if oldID > 0 {
 			// Assignment mutations hold the old type lock, so this set is stable.
-			ids := []int64{}
-			if err := tx.SelectContext(ctx, &ids, `SELECT c.consultant_id FROM consultants c WHERE EXISTS(SELECT 1 FROM consultation_offerings o WHERE o.consultant_id=c.consultant_id AND o.consultation_type_id=$1) ORDER BY c.consultant_id FOR UPDATE OF c`, oldID); err != nil {
+			if err := lockTypeConsultants(ctx, tx, oldID); err != nil {
 				return err
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO consultation_offerings(consultant_id,consultation_type_id) SELECT consultant_id,$2 FROM consultation_offerings WHERE consultation_type_id=$1 AND is_active`, oldID, result.ID); err != nil {
 				return err
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE consultation_offerings SET is_active=false WHERE consultation_type_id=$1`, oldID); err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE consultation_types SET is_active=false WHERE consultation_type_id=$1`, oldID); err != nil {
-				return err
-			}
+			return deactivateType(ctx, tx, oldID)
 		}
 		return nil
 	})
 	return result, err
+}
+
+func lockTypeConsultants(ctx context.Context, tx *sqlx.Tx, id int64) error {
+	var ids []int64
+	return tx.SelectContext(ctx, &ids, `SELECT c.consultant_id FROM consultants c WHERE EXISTS(SELECT 1 FROM consultation_offerings o WHERE o.consultant_id=c.consultant_id AND o.consultation_type_id=$1) ORDER BY c.consultant_id FOR UPDATE OF c`, id)
+}
+
+func deactivateType(ctx context.Context, tx *sqlx.Tx, id int64) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE consultation_offerings SET is_active=false WHERE consultation_type_id=$1`, id); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE consultation_types SET is_active=false WHERE consultation_type_id=$1`, id)
+	return err
 }
 
 type Offering struct {
@@ -345,6 +352,28 @@ func (s *Service) ListOfferings(ctx context.Context) ([]Offering, error) {
 	result := []Offering{}
 	err := s.DB.SelectContext(ctx, &result, `SELECT o.consultation_offering_id,o.consultant_id,o.consultation_type_id,o.is_active FROM consultation_offerings o JOIN consultants c USING(consultant_id) JOIN consultation_types t USING(consultation_type_id) WHERE o.is_active AND c.is_active AND t.is_active ORDER BY o.consultation_offering_id`)
 	return result, domainError(err)
+}
+
+type AssignedOffering struct {
+	Offering
+	Title     string `db:"title" json:"title"`
+	Available bool   `db:"is_available" json:"is_available"`
+}
+
+func (s *Service) ListMyOfferings(ctx context.Context, actor Actor) ([]AssignedOffering, error) {
+	role, err := domainActor(ctx, s.DB, actor, false)
+	if err != nil {
+		return nil, err
+	}
+	if role != "consultant" {
+		return nil, problem(403, "forbidden")
+	}
+	rows := []AssignedOffering{}
+	err = s.DB.SelectContext(ctx, &rows, `SELECT o.consultation_offering_id,o.consultant_id,o.consultation_type_id,o.is_active,t.title,
+		o.is_active AND c.is_active AND t.is_active AS is_available
+		FROM consultation_offerings o JOIN consultants c USING(consultant_id) JOIN consultation_types t USING(consultation_type_id)
+		WHERE c.user_id=$1 ORDER BY o.consultation_offering_id`, actor.UserID)
+	return rows, domainError(err)
 }
 
 func (s *Service) SetOffering(ctx context.Context, actor Actor, typeID, consultantID int64, active bool) (Offering, error) {

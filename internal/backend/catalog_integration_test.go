@@ -105,6 +105,15 @@ func TestCatalogAdministrationAndImmutableReplacement(t *testing.T) {
 		t.Fatalf("role injection created %d users: %v", escalations, err)
 	}
 	provision := map[string]any{"user_id": firstID, "bio": "First consultant"}
+	for _, path := range []string{"consultants", "consultation-types", "offerings", "consultant-candidates?email=first%40catalog.test"} {
+		guest.request(t, "GET", "/api/v1/admin/"+path, nil, 401, nil)
+		first.request(t, "GET", "/api/v1/admin/"+path, nil, 403, nil)
+	}
+	var candidate ConsultantCandidate
+	admin.request(t, "GET", "/api/v1/admin/consultant-candidates?email=FIRST%40catalog.test", nil, 200, &candidate)
+	if candidate.UserID != firstID || candidate.Name == "" {
+		t.Fatalf("candidate = %+v", candidate)
+	}
 	guest.request(t, "POST", "/api/v1/admin/consultants", provision, 401, nil)
 	first.request(t, "POST", "/api/v1/admin/consultants", provision, 403, nil)
 	var c1, c2 Consultant
@@ -196,5 +205,35 @@ func TestCatalogAdministrationAndImmutableReplacement(t *testing.T) {
 	guest.request(t, "GET", "/api/v1/offerings", nil, 200, &offerings)
 	if len(offerings) != 0 {
 		t.Fatal("inactive offering leaked")
+	}
+	admin.request(t, "GET", "/api/v1/admin/consultation-types?limit=1&offset=0", nil, 200, &types)
+	if len(types) != 1 || types[0] != old {
+		t.Fatalf("admin history page = %+v", types)
+	}
+	first.request(t, "DELETE", fmt.Sprintf("/api/v1/admin/consultation-types/%d", replacement.ID), nil, 403, nil)
+	offeringInput["is_active"] = true
+	admin.request(t, "PUT", "/api/v1/admin/offerings", offeringInput, 200, nil)
+	for range 2 {
+		admin.request(t, "DELETE", fmt.Sprintf("/api/v1/admin/consultation-types/%d", replacement.ID), nil, 204, nil)
+	}
+	admin.request(t, "GET", "/api/v1/admin/offerings", nil, 200, &offerings)
+	if len(offerings) != 3 || offerings[2].Active || offerings[2].TypeID != replacement.ID {
+		t.Fatalf("admin offerings after deactivation = %+v", offerings)
+	}
+	guest.request(t, "GET", "/api/v1/consultation-types", nil, 200, &types)
+	if len(types) != 0 {
+		t.Fatalf("deactivated type in public list: %+v", types)
+	}
+	first.request(t, "PUT", consultantPath+"/bio", map[string]string{"bio": "Denied"}, 403, nil)
+	admin.request(t, "PUT", consultantPath+"/bio", map[string]string{"bio": "Updated by admin"}, 204, nil)
+	admin.request(t, "PATCH", consultantPath, map[string]bool{"is_active": false}, 204, nil)
+	admin.request(t, "GET", "/api/v1/admin/consultants", nil, 200, &consultants)
+	if len(consultants) != 2 || consultants[0].Active || consultants[0].Bio == nil || *consultants[0].Bio != "Updated by admin" {
+		t.Fatalf("admin consultants = %+v", consultants)
+	}
+	var own []AssignedOffering
+	first.request(t, "GET", "/api/v1/me/offerings", nil, 200, &own)
+	if len(own) != 2 || own[0].ConsultantID != c1.ID || own[1].Title != replacement.Title || own[1].Available {
+		t.Fatalf("own offerings = %+v", own)
 	}
 }
