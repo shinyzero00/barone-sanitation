@@ -112,7 +112,7 @@ func TestHistoryActiveChangesAndReplacement(t *testing.T) {
 		t.Fatalf("old offering active=%v: %v", active, err)
 	}
 	got, err := f.s.GetBooking(f.ctx, f.client, b.ID)
-	if err != nil || got.TypeID != f.typ.ID || got.Price != "123.45" || got.DurationMinutes != 60 || !got.StartsAt.Equal(b.StartsAt) || !got.EndsAt.Equal(b.EndsAt) {
+	if err != nil || got.TypeID != f.typ.ID || got.ConsultationTitle != f.typ.Title || got.Price != "123.45" || got.DurationMinutes != 60 || !got.StartsAt.Equal(b.StartsAt) || !got.EndsAt.Equal(b.EndsAt) {
 		t.Fatalf("historical booking: %+v, %v", got, err)
 	}
 	offerings, err := f.s.ListOfferings(f.ctx)

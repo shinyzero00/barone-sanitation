@@ -8,18 +8,22 @@ import (
 )
 
 type Booking struct {
-	ID              int64     `db:"consultation_booking_id" json:"consultation_booking_id"`
-	ClientID        int64     `db:"client_id" json:"client_id"`
-	OfferingID      int64     `db:"consultation_offering_id" json:"consultation_offering_id"`
-	AddressID       *int64    `db:"client_address_id" json:"client_address_id"`
-	ConsultantID    int64     `db:"consultant_id" json:"consultant_id"`
-	TypeID          int64     `db:"consultation_type_id" json:"consultation_type_id"`
-	StartsAt        time.Time `db:"starts_at" json:"starts_at"`
-	EndsAt          time.Time `db:"ends_at" json:"ends_at"`
-	CreatedAt       time.Time `db:"created_at" json:"created_at"`
-	Status          string    `db:"status" json:"status"`
-	Price           string    `db:"price" json:"price"`
-	DurationMinutes int       `db:"duration_minutes" json:"duration_minutes"`
+	ID                int64     `db:"consultation_booking_id" json:"consultation_booking_id"`
+	ClientID          int64     `db:"client_id" json:"client_id"`
+	OfferingID        int64     `db:"consultation_offering_id" json:"consultation_offering_id"`
+	AddressID         *int64    `db:"client_address_id" json:"client_address_id"`
+	ConsultantID      int64     `db:"consultant_id" json:"consultant_id"`
+	TypeID            int64     `db:"consultation_type_id" json:"consultation_type_id"`
+	StartsAt          time.Time `db:"starts_at" json:"starts_at"`
+	EndsAt            time.Time `db:"ends_at" json:"ends_at"`
+	CreatedAt         time.Time `db:"created_at" json:"created_at"`
+	Status            string    `db:"status" json:"status"`
+	Price             string    `db:"price" json:"price"`
+	DurationMinutes   int       `db:"duration_minutes" json:"duration_minutes"`
+	ConsultationTitle string    `db:"consultation_title" json:"consultation_title"`
+	ConsultantName    string    `db:"consultant_name" json:"consultant_name"`
+	ClientName        string    `db:"client_name" json:"client_name"`
+	AddressLine       *string   `db:"address_line" json:"address_line" doc:"Current address text; null if no address was selected."`
 }
 
 type BookingInput struct {
@@ -29,10 +33,13 @@ type BookingInput struct {
 }
 
 const bookingSelect = `SELECT b.consultation_booking_id,b.client_id,b.consultation_offering_id,b.client_address_id,
-	o.consultant_id,o.consultation_type_id,b.starts_at,b.ends_at,b.created_at,s.status,t.price::text AS price,t.duration_minutes
+	o.consultant_id,o.consultation_type_id,b.starts_at,b.ends_at,b.created_at,s.status,t.price::text AS price,t.duration_minutes,
+	t.title AS consultation_title,ku.name AS consultant_name,cu.name AS client_name,a.address_line
 	FROM consultation_bookings b JOIN consultation_offerings o USING(consultation_offering_id)
 	JOIN consultation_types t USING(consultation_type_id) JOIN clients c USING(client_id)
 	JOIN consultants k ON k.consultant_id=o.consultant_id
+	JOIN users cu ON cu.user_id=c.user_id JOIN users ku ON ku.user_id=k.user_id
+	LEFT JOIN client_addresses a ON a.client_id=b.client_id AND a.client_address_id=b.client_address_id
 	JOIN consultation_booking_current_statuses s USING(consultation_booking_id)`
 
 const bookingScope = ` ($2='admin' OR c.user_id=$1 OR ($2='consultant' AND k.user_id=$1))`

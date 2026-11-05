@@ -230,6 +230,13 @@ func TestHTTPOwnershipSchedulingAndStatus(t *testing.T) {
 	other.request(t, "DELETE", addressPath, struct{}{}, 404, nil)
 	var booking Booking
 	client.request(t, "POST", "/api/v1/bookings", BookingInput{OfferingID: offering.ID, AddressID: &address.ID, StartsAt: start}, 201, &booking)
+	assertDetails := func(got Booking) {
+		t.Helper()
+		if got.ID != booking.ID || got.ConsultationTitle != typ.Title || got.ConsultantName != c.Name || got.ClientName == "" || got.AddressLine == nil || *got.AddressLine != address.AddressLine {
+			t.Fatalf("booking details = %+v", got)
+		}
+	}
+	assertDetails(booking)
 	for i, addressField := range []map[string]any{{}, {"client_address_id": nil}} {
 		in := map[string]any{"consultation_offering_id": offering.ID, "starts_at": start.Add(time.Duration(i+1) * time.Hour)}
 		for key, value := range addressField {
@@ -237,12 +244,17 @@ func TestHTTPOwnershipSchedulingAndStatus(t *testing.T) {
 		}
 		var optional Booking
 		client.request(t, "POST", "/api/v1/bookings", in, 201, &optional)
-		if optional.AddressID != nil {
+		if optional.AddressID != nil || optional.AddressLine != nil {
 			t.Fatal("optional booking address was not nil")
 		}
 		client.request(t, "POST", fmt.Sprintf("/api/v1/bookings/%d/status", optional.ID), map[string]string{"status": "cancelled"}, 200, nil)
 	}
 	path := fmt.Sprintf("/api/v1/bookings/%d", booking.ID)
+	for _, browser := range []*httpTestBrowser{client, consultant, admin} {
+		var details Booking
+		browser.request(t, "GET", path, nil, 200, &details)
+		assertDetails(details)
+	}
 	other.request(t, "GET", path, nil, 404, nil)
 	other.request(t, "GET", path+"/events", nil, 404, nil)
 	other.request(t, "POST", path+"/status", map[string]string{"status": "cancelled"}, 404, nil)
