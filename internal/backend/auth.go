@@ -143,6 +143,15 @@ func (s *Service) authTx(ctx context.Context, fn func(*sqlx.Tx) error) error {
 type issuedCode struct {
 	ID, UserID           int64
 	Email, Purpose, Code string
+	Timing               codeTiming
+}
+
+type codeTiming struct {
+	ExpiresAt, ResendAt time.Time
+}
+
+func (s *Service) codeTimingAt(now time.Time) codeTiming {
+	return codeTiming{ExpiresAt: now.Add(s.Config.CodeTTL), ResendAt: now.Add(s.Config.ResendInterval)}
 }
 
 // issueCode requires the user lock; the latest row is inspected even if no longer usable.
@@ -177,12 +186,12 @@ func (s *Service) issueCode(ctx context.Context, tx *sqlx.Tx, u authUser, purpos
 	if ip != "" {
 		requestedIP = ip
 	}
-	out = issuedCode{UserID: u.ID, Email: u.Email, Purpose: purpose, Code: code}
+	out = issuedCode{UserID: u.ID, Email: u.Email, Purpose: purpose, Code: code, Timing: s.codeTimingAt(now)}
 	// The hash includes the generated identity; the placeholder cannot escape this transaction.
 	err = tx.QueryRowxContext(ctx, `INSERT INTO verification_codes
 		(user_id,purpose,email,code_hash,challenge_hash,created_at,expires_at,regenerate_available_at,requested_ip)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING verification_code_id`,
-		u.ID, purpose, u.Email, []byte{}, challengeDigest, now, now.Add(s.Config.CodeTTL), now.Add(s.Config.ResendInterval), requestedIP).Scan(&out.ID)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING verification_code_id,expires_at,regenerate_available_at`,
+		u.ID, purpose, u.Email, []byte{}, challengeDigest, now, out.Timing.ExpiresAt, out.Timing.ResendAt, requestedIP).Scan(&out.ID, &out.Timing.ExpiresAt, &out.Timing.ResendAt)
 	if err != nil {
 		return issuedCode{}, err
 	}
@@ -227,28 +236,33 @@ func (s *Service) deliverCode(ctx context.Context, c issuedCode) error {
 
 // Register creates only a client. No code, password hash, or session is returned.
 func (s *Service) Register(ctx context.Context, in RegisterInput, ip string) (int64, error) {
+	id, _, err := s.register(ctx, in, ip)
+	return id, err
+}
+
+func (s *Service) register(ctx context.Context, in RegisterInput, ip string) (int64, codeTiming, error) {
 	email, err := canonicalEmail(in.Email)
 	if err != nil {
-		return 0, err
+		return 0, codeTiming{}, err
 	}
 	in.Name, in.Phone = strings.TrimSpace(in.Name), strings.TrimSpace(in.Phone)
 	if !validText(in.Name, 200) || !validText(in.Phone, 40) || !validPassword(in.Password) {
-		return 0, problem(422, "invalid_registration")
+		return 0, codeTiming{}, problem(422, "invalid_registration")
 	}
 	for _, r := range in.Phone {
 		if !strings.ContainsRune("0123456789+() -.x", r) {
-			return 0, problem(422, "invalid_phone")
+			return 0, codeTiming{}, problem(422, "invalid_phone")
 		}
 	}
 	if !strings.ContainsAny(in.Phone, "0123456789") {
-		return 0, problem(422, "invalid_phone")
+		return 0, codeTiming{}, problem(422, "invalid_phone")
 	}
 	if err = s.RateLimit(ctx, ip, "register"); err != nil {
-		return 0, err
+		return 0, codeTiming{}, err
 	}
 	hash, err := hashPassword(in.Password)
 	if err != nil {
-		return 0, err
+		return 0, codeTiming{}, err
 	}
 	var id int64
 	var c issuedCode
@@ -267,74 +281,83 @@ func (s *Service) Register(ctx context.Context, in RegisterInput, ip string) (in
 		return err
 	})
 	if err != nil {
-		return 0, err
+		return 0, codeTiming{}, err
 	}
 	if err = s.deliverCode(ctx, c); err != nil {
-		return 0, err
+		return 0, codeTiming{}, err
 	}
-	return id, nil
+	return id, c.Timing, nil
 }
 
 // RequestCode allows only verification and password reset. Unknown emails succeed silently.
 func (s *Service) RequestCode(ctx context.Context, email, purpose, ip string) error {
+	_, err := s.requestCode(ctx, email, purpose, ip)
+	return err
+}
+
+func (s *Service) requestCode(ctx context.Context, email, purpose, ip string) (codeTiming, error) {
 	email, err := canonicalEmail(email)
 	if err != nil {
-		return err
+		return codeTiming{}, err
 	}
 	if purpose != "verify_email" && purpose != "reset_password" {
-		return problem(422, "invalid_purpose")
+		return codeTiming{}, problem(422, "invalid_purpose")
 	}
 	if err = s.RateLimit(ctx, ip, "request_code"); err != nil {
-		return err
+		return codeTiming{}, err
 	}
 	var c issuedCode
 	err = s.authTx(ctx, func(tx *sqlx.Tx) error {
 		u, err := lockAuthUser(ctx, tx, email)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
+		if errors.Is(err, sql.ErrNoRows) || err == nil && purpose == "verify_email" && u.Verified.Valid {
+			now, err := authNow(ctx, tx)
+			c.Timing = s.codeTimingAt(now)
+			return err
 		}
 		if err != nil {
 			return err
-		}
-		if purpose == "verify_email" && u.Verified.Valid {
-			return nil
 		}
 		c, err = s.issueCode(ctx, tx, u, purpose, "", ip)
 		return err
 	})
 	if err != nil {
-		return err
+		return codeTiming{}, err
 	}
-	return s.deliverCode(ctx, c)
+	return c.Timing, s.deliverCode(ctx, c)
 }
 
 // StartLogin returns a challenge only for an HttpOnly, Secure, SameSite cookie,
 // never for a response body. The HTTP layer must not log or expose it.
 func (s *Service) StartLogin(ctx context.Context, email, password, ip string) (string, error) {
+	token, _, err := s.startLogin(ctx, email, password, ip)
+	return token, err
+}
+
+func (s *Service) startLogin(ctx context.Context, email, password, ip string) (string, codeTiming, error) {
 	email, err := canonicalEmail(email)
 	if err != nil {
-		return "", err
+		return "", codeTiming{}, err
 	}
 	if !validPassword(password) {
-		return "", problem(401, "invalid_credentials")
+		return "", codeTiming{}, problem(401, "invalid_credentials")
 	}
 	if err = s.RateLimit(ctx, ip, "login"); err != nil {
-		return "", err
+		return "", codeTiming{}, err
 	}
 	var snapshot authUser
 	err = s.DB.GetContext(ctx, &snapshot, `SELECT user_id,email,password_hash,email_verified_at FROM users WHERE lower(email)=$1`, email)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", problem(401, "invalid_credentials")
+		return "", codeTiming{}, problem(401, "invalid_credentials")
 	}
 	if err != nil {
-		return "", err
+		return "", codeTiming{}, err
 	}
 	if !checkPassword(snapshot.PasswordHash, password) {
-		return "", problem(401, "invalid_credentials")
+		return "", codeTiming{}, problem(401, "invalid_credentials")
 	}
 	challenge, err := newToken()
 	if err != nil {
-		return "", err
+		return "", codeTiming{}, err
 	}
 	var c issuedCode
 	err = s.authTx(ctx, func(tx *sqlx.Tx) error {
@@ -349,12 +372,12 @@ func (s *Service) StartLogin(ctx context.Context, email, password, ip string) (s
 		return err
 	})
 	if err != nil {
-		return "", err
+		return "", codeTiming{}, err
 	}
 	if err = s.deliverCode(ctx, c); err != nil {
-		return "", err
+		return "", codeTiming{}, err
 	}
-	return challenge, nil
+	return challenge, c.Timing, nil
 }
 
 // verifyCode returns denial separately so failed-attempt writes can be committed.

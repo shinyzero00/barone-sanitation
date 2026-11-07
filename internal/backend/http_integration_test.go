@@ -160,6 +160,39 @@ func TestHTTPAuthEndToEnd(t *testing.T) {
 	b.request(t, "GET", "/api/v1/me", nil, 401, nil)
 }
 
+func TestHTTPCodeTiming(t *testing.T) {
+	s, mailer := authFixture(t)
+	s.Config.PublicOrigin = httpTestOrigin
+	b := newHTTPBrowser(t, NewApp(s))
+	const email = "timing@example.com"
+	check := func(response *http.Response, purpose string) {
+		t.Helper()
+		expiresAt, expiryErr := time.Parse(time.RFC3339Nano, response.Header.Get("OTP-Expires-At"))
+		resendAt, resendErr := time.Parse(time.RFC3339Nano, response.Header.Get("OTP-Resend-At"))
+		if expiryErr != nil || resendErr != nil || expiresAt.Sub(resendAt) != s.Config.CodeTTL-s.Config.ResendInterval {
+			t.Fatalf("invalid OTP timing headers: %v, %v", expiryErr, resendErr)
+		}
+		if purpose == "" {
+			return
+		}
+		var stored struct {
+			ExpiresAt time.Time `db:"expires_at"`
+			ResendAt  time.Time `db:"regenerate_available_at"`
+		}
+		if err := s.DB.GetContext(t.Context(), &stored, `SELECT expires_at,regenerate_available_at FROM verification_codes WHERE email=$1 AND purpose=$2`, email, purpose); err != nil {
+			t.Fatal(err)
+		}
+		if !expiresAt.Equal(stored.ExpiresAt) || !resendAt.Equal(stored.ResendAt) {
+			t.Fatal("response timing differs from persisted timing")
+		}
+	}
+	check(b.request(t, "POST", "/api/v1/auth/register", RegisterInput{Name: "Timing", Email: email, Password: authTestPassword, Phone: "12345678"}, 201, nil), "verify_email")
+	b.request(t, "POST", "/api/v1/auth/verify-email", CodeInput{Email: email, Code: mailer.Code(email)}, 204, nil)
+	check(b.request(t, "POST", "/api/v1/auth/login", map[string]string{"email": email, "password": authTestPassword}, 204, nil), "login")
+	check(b.request(t, "POST", "/api/v1/auth/codes", map[string]string{"email": email, "purpose": "reset_password"}, 204, nil), "reset_password")
+	check(b.request(t, "POST", "/api/v1/auth/codes", map[string]string{"email": "missing@example.com", "purpose": "reset_password"}, 204, nil), "")
+}
+
 func TestHTTPOwnershipSchedulingAndStatus(t *testing.T) {
 	s, mailer := authFixture(t)
 	s.Config.PublicOrigin, s.Config.SlotStep = httpTestOrigin, 15*time.Minute

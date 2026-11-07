@@ -45,6 +45,15 @@ type HTTPCookieOutput struct {
 	Cookies []http.Cookie `header:"Set-Cookie"`
 }
 
+type HTTPOtpTiming struct {
+	ExpiresAt string `header:"OTP-Expires-At" format:"date-time" doc:"When the code expires (RFC 3339 UTC)."`
+	ResendAt  string `header:"OTP-Resend-At" format:"date-time" doc:"Earliest resend time (RFC 3339 UTC); a later 429 Retry-After takes precedence."`
+}
+
+func httpOTPTiming(t codeTiming) HTTPOtpTiming {
+	return HTTPOtpTiming{ExpiresAt: t.ExpiresAt.UTC().Format(time.RFC3339Nano), ResendAt: t.ResendAt.UTC().Format(time.RFC3339Nano)}
+}
+
 type HTTPTimeRange struct {
 	From time.Time `query:"from" required:"true"`
 	To   time.Time `query:"to" required:"true"`
@@ -92,18 +101,30 @@ func registerHTTPOperations(api huma.API, s *Service) {
 	type registration struct {
 		UserID int64 `json:"user_id"`
 	}
+	type registrationOutput struct {
+		HTTPOtpTiming
+		Body registration
+	}
 	httpRegister(api, operation("POST", "/api/v1/auth/register", "registerClient", "Register client", "Authentication", 201), false,
-		func(ctx context.Context, in *HTTPBody[RegisterInput]) (*httpOutput[registration], error) {
-			id, err := s.Register(ctx, in.Body, httpIP(ctx))
-			return httpResult(registration{UserID: id}, err)
+		func(ctx context.Context, in *HTTPBody[RegisterInput]) (*registrationOutput, error) {
+			id, timing, err := s.register(ctx, in.Body, httpIP(ctx))
+			if err != nil {
+				return nil, err
+			}
+			return &registrationOutput{HTTPOtpTiming: httpOTPTiming(timing), Body: registration{UserID: id}}, nil
 		})
 	type requestCode struct {
 		Email   string `json:"email"`
 		Purpose string `json:"purpose" enum:"verify_email,reset_password"`
 	}
 	httpRegister(api, operation("POST", "/api/v1/auth/codes", "requestCode", "Request verification code", "Authentication", 204), false,
-		func(ctx context.Context, in *HTTPBody[requestCode]) (*struct{}, error) {
-			return nil, s.RequestCode(ctx, in.Body.Email, in.Body.Purpose, httpIP(ctx))
+		func(ctx context.Context, in *HTTPBody[requestCode]) (*HTTPOtpTiming, error) {
+			timing, err := s.requestCode(ctx, in.Body.Email, in.Body.Purpose, httpIP(ctx))
+			if err != nil {
+				return nil, err
+			}
+			out := httpOTPTiming(timing)
+			return &out, nil
 		})
 	httpRegister(api, operation("POST", "/api/v1/auth/verify-email", "verifyEmail", "Verify email address", "Authentication", 204), false,
 		func(ctx context.Context, in *HTTPBody[CodeInput]) (*struct{}, error) {
@@ -113,15 +134,19 @@ func registerHTTPOperations(api huma.API, s *Service) {
 		Email    string `json:"email"`
 		Password string `json:"password" writeOnly:"true"`
 	}
+	type loginOutput struct {
+		HTTPOtpTiming
+		HTTPCookieOutput
+	}
 	httpRegister(api, operation("POST", "/api/v1/auth/login", "startLogin", "Start login challenge", "Authentication", 204), false,
-		func(ctx context.Context, in *HTTPBody[login]) (*HTTPCookieOutput, error) {
-			token, err := s.StartLogin(ctx, in.Body.Email, in.Body.Password, httpIP(ctx))
+		func(ctx context.Context, in *HTTPBody[login]) (*loginOutput, error) {
+			token, timing, err := s.startLogin(ctx, in.Body.Email, in.Body.Password, httpIP(ctx))
 			if err != nil {
 				return nil, err
 			}
-			return &HTTPCookieOutput{Cookies: []http.Cookie{
+			return &loginOutput{HTTPOtpTiming: httpOTPTiming(timing), HTTPCookieOutput: HTTPCookieOutput{Cookies: []http.Cookie{
 				httpCookie(challengeCookie, token, s.Config.CodeTTL, true),
-			}}, nil
+			}}}, nil
 		})
 	type verifyLogin struct {
 		HTTPBody[CodeInput]
