@@ -110,12 +110,12 @@ func TestHTTPAuthEndToEnd(t *testing.T) {
 	id := b.registerLogin(t, mailer, email)
 	var profile Profile
 	b.request(t, "GET", "/api/v1/me", nil, 200, &profile)
-	if profile.UserID != id || profile.Role != "client" {
+	if profile.UserID != id || profile.Role != "client" || profile.Email != email {
 		t.Fatal("wrong authenticated profile")
 	}
 	var unchanged Profile
 	b.request(t, "PATCH", "/api/v1/me", map[string]any{"name": nil, "phone": nil, "bio": nil}, 200, &unchanged)
-	if unchanged.Name != profile.Name || unchanged.Phone == nil || profile.Phone == nil || *unchanged.Phone != *profile.Phone || unchanged.Bio != nil {
+	if unchanged.Email != email || unchanged.Name != profile.Name || unchanged.Phone == nil || profile.Phone == nil || *unchanged.Phone != *profile.Phone || unchanged.Bio != nil {
 		t.Fatal("null PATCH fields changed profile")
 	}
 	for _, tc := range []struct {

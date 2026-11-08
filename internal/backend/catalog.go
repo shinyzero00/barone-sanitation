@@ -76,6 +76,7 @@ func (s *Service) domainTx(ctx context.Context, actor Actor, fn func(*sqlx.Tx, s
 
 type Profile struct {
 	UserID       int64   `db:"user_id" json:"user_id"`
+	Email        string  `db:"email" json:"email"`
 	Name         string  `db:"name" json:"name"`
 	Role         string  `db:"role" json:"role"`
 	ClientID     *int64  `db:"client_id" json:"client_id"`
@@ -90,7 +91,7 @@ type ProfileUpdate struct {
 	Bio   *string `json:"bio" required:"false" maxLength:"10000"`
 }
 
-const profileSelect = `SELECT u.user_id,u.name,u.role,c.client_id,c.phone,k.consultant_id,k.bio
+const profileSelect = `SELECT u.user_id,u.email,u.name,u.role,c.client_id,c.phone,k.consultant_id,k.bio
 	FROM users u LEFT JOIN clients c USING(user_id) LEFT JOIN consultants k USING(user_id) WHERE u.user_id=$1`
 
 func (s *Service) GetProfile(ctx context.Context, actor Actor) (Profile, error) {
