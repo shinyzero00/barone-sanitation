@@ -109,7 +109,7 @@ func TestSwaggerRouteCoverage(t *testing.T) {
 			switch {
 			case path == "/api/v1/auth/login/verify":
 				scheme = "LoginChallenge"
-			case path == "/healthz", path == "/csrf", strings.HasPrefix(path, "/api/v1/auth/") && path != "/api/v1/auth/logout",
+			case path == "/healthz", path == "/csrf", path == "/api/v1/config", strings.HasPrefix(path, "/api/v1/auth/") && path != "/api/v1/auth/logout",
 				method == "get" && (path == "/api/v1/consultants" || path == "/api/v1/consultation-types" || path == "/api/v1/offerings" || strings.HasSuffix(path, "/slots")):
 				scheme = ""
 			}

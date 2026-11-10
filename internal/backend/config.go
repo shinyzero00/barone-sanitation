@@ -27,6 +27,7 @@ type Config struct {
 	RateWindow     time.Duration
 	RateLimit      int
 	SlotStep       time.Duration
+	PriceCurrency  string
 	TrustedProxies []string
 	OTPProvider    string
 	SMTPAddress    string
@@ -38,9 +39,10 @@ type Config struct {
 func LoadConfig() (Config, error) {
 	c := Config{
 		DatabaseURL: os.Getenv("DATABASE_URL"), ListenAddress: env("LISTEN_ADDRESS", "127.0.0.1:8080"),
-		PublicOrigin: env("PUBLIC_ORIGIN", "https://localhost:8080"),
-		OTPProvider:  env("OTP_PROVIDER", "smtp"),
-		SMTPAddress:  os.Getenv("SMTP_ADDRESS"), SMTPUsername: os.Getenv("SMTP_USERNAME"),
+		PublicOrigin:  env("PUBLIC_ORIGIN", "https://localhost:8080"),
+		OTPProvider:   env("OTP_PROVIDER", "smtp"),
+		PriceCurrency: strings.ToUpper(strings.TrimSpace(os.Getenv("PRICE_CURRENCY"))),
+		SMTPAddress:   os.Getenv("SMTP_ADDRESS"), SMTPUsername: os.Getenv("SMTP_USERNAME"),
 		SMTPPassword: os.Getenv("SMTP_PASSWORD"), SMTPFrom: os.Getenv("SMTP_FROM"),
 	}
 	var err error
@@ -50,6 +52,11 @@ func LoadConfig() (Config, error) {
 	}
 	if c.DatabaseURL == "" {
 		return c, fmt.Errorf("DATABASE_URL is required")
+	}
+	if code := c.PriceCurrency; code != "" {
+		if len(code) != 3 || strings.IndexFunc(code, func(r rune) bool { return r < 'A' || r > 'Z' }) >= 0 {
+			return c, fmt.Errorf("PRICE_CURRENCY must be a three-letter currency code")
+		}
 	}
 	u, err := url.Parse(c.PublicOrigin)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {

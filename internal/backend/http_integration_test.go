@@ -193,6 +193,17 @@ func TestHTTPCodeTiming(t *testing.T) {
 	check(b.request(t, "POST", "/api/v1/auth/codes", map[string]string{"email": "missing@example.com", "purpose": "reset_password"}, 204, nil), "")
 }
 
+func TestHTTPPublicConfig(t *testing.T) {
+	s, _ := authFixture(t)
+	s.Config.PriceCurrency = "EUR"
+	b := newHTTPBrowser(t, NewApp(s))
+	var config map[string]string
+	b.request(t, "GET", "/api/v1/config", nil, 200, &config)
+	if len(config) != 1 || config["price_currency"] != "EUR" {
+		t.Fatal("unexpected public config response")
+	}
+}
+
 func TestHTTPOwnershipSchedulingAndStatus(t *testing.T) {
 	s, mailer := authFixture(t)
 	s.Config.PublicOrigin, s.Config.SlotStep = httpTestOrigin, 15*time.Minute

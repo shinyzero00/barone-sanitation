@@ -77,6 +77,13 @@ func registerHTTPOperations(api huma.API, s *Service) {
 			}
 			return httpResult(health{Status: "ok"}, nil)
 		})
+	type publicConfig struct {
+		PriceCurrency string `json:"price_currency" pattern:"^([A-Z]{3})?$" doc:"Deployment-wide display currency; empty if not configured. Does not convert prices."`
+	}
+	httpRegister(api, operation("GET", "/api/v1/config", "getPublicConfig", "Get public application settings", "Configuration", 200), false,
+		func(_ context.Context, _ *struct{}) (*httpOutput[publicConfig], error) {
+			return httpResult(publicConfig{PriceCurrency: s.Config.PriceCurrency}, nil)
+		})
 
 	type csrfInput struct {
 		CSRF string `cookie:"__Host-csrf" required:"false"`

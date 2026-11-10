@@ -17,6 +17,7 @@
 | `RATE_WINDOW` | `1m` | Shared per-IP rate-limit window. |
 | `RATE_LIMIT` | `30` | Requests allowed per IP per bucket per window. |
 | `SLOT_STEP` | `15m` | Available-slot grid spacing. |
+| `PRICE_CURRENCY` | Unset | Three-letter display currency (e.g. `USD`), exposed via `GET /api/v1/config`. Applies to all prices; does not convert amounts. |
 | `TRUSTED_PROXIES` | Empty | Comma-separated proxy IPs/CIDRs trusted for `X-Forwarded-For`. |
 | `SMTP_ADDRESS` | Required for `smtp` | SMTP `host:port`; implicit TLS on 465, mandatory STARTTLS otherwise. |
 | `SMTP_FROM` | Required for `smtp` | Sender mailbox, optionally with a display name. |
