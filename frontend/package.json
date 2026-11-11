@@ -1,0 +1,25 @@
+{
+  "name": "barone-sanitation-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "api:generate": "openapi-typescript http://127.0.0.1:8080/openapi.json -o src/api/schema.ts"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.14.0",
+    "pinia": "^3.0.3",
+    "vue": "^3.5.18",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "openapi-typescript": "^7.9.1",
+    "sass": "^1.89.2",
+    "typescript": "~5.8.3",
+    "vite": "^6.4.0",
+    "vue-tsc": "^3.0.0"
+  }
+}
