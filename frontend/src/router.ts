@@ -7,6 +7,7 @@ export const router = createRouter({
   routes: [
     { path: '/', component: CatalogView },
     { path: '/consultants/:id', component: CatalogView },
+    { path: '/:mode(login|register|reset)', name: 'auth', component: () => import('./views/AuthView.vue') },
     { path: '/:pathMatch(.*)*', component: { template: '<h1>Страница не найдена</h1><a href="/">В каталог</a>' } },
   ],
 })
