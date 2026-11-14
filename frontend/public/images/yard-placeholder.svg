@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 360">
+  <rect width="560" height="360" fill="#ded8bd"/>
+  <path fill="#b5b99c" d="M0 230 140 158l120 42 127-83 173 105v138H0z"/>
+  <path fill="#879679" d="M0 256h560v104H0z"/>
+  <path fill="#344c3e" d="M91 152h270v111H91zM361 190h64l45 47v26H361z"/>
+  <path fill="#ded8bd" d="M377 202h42l24 29h-66z"/>
+  <path stroke="#ded8bd" stroke-width="3" d="M112 173h222m-222 68h222"/>
+  <g fill="#202c26"><circle cx="155" cy="262" r="30"/><circle cx="410" cy="262" r="30"/></g>
+  <g fill="#98a08a"><circle cx="155" cy="262" r="12"/><circle cx="410" cy="262" r="12"/></g>
+  <text x="222" y="214" fill="#f4edd7" font-size="24" font-family="Georgia, serif" text-anchor="middle">BARONE</text>
+</svg>

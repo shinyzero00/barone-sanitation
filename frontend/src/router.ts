@@ -1,0 +1,22 @@
+import { createRouter, createWebHistory } from 'vue-router'
+import { useAccount } from './stores/account'
+import CatalogView from './views/CatalogView.vue'
+
+export const router = createRouter({
+  history: createWebHistory(), scrollBehavior: () => ({ top: 0 }),
+  routes: [
+    { path: '/', component: CatalogView },
+    { path: '/consultants/:id', component: CatalogView },
+    { path: '/:pathMatch(.*)*', component: { template: '<h1>Страница не найдена</h1><a href="/">В каталог</a>' } },
+  ],
+})
+
+let initialized = false
+router.beforeEach(async to => {
+  const account = useAccount()
+  if (!initialized || to.meta.protected || to.meta.role) {
+    try { await account.refresh(); initialized = true } catch { /* Views report request failures. */ }
+  }
+  if ((to.meta.protected || to.meta.role) && !account.profile) return { path: '/login', query: { next: to.fullPath } }
+  if (to.meta.role && to.meta.role !== account.profile?.role) return '/bookings'
+})
