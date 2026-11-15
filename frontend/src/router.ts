@@ -8,6 +8,8 @@ export const router = createRouter({
     { path: '/', component: CatalogView },
     { path: '/consultants/:id', component: CatalogView },
     { path: '/:mode(login|register|reset)', name: 'auth', component: () => import('./views/AuthView.vue') },
+    { path: '/bookings', name: 'bookings', component: () => import('./views/BookingsView.vue'), meta: { protected: true } },
+    { path: '/bookings/:id', name: 'booking', component: () => import('./views/BookingView.vue'), meta: { protected: true } },
     { path: '/:pathMatch(.*)*', component: { template: '<h1>Страница не найдена</h1><a href="/">В каталог</a>' } },
   ],
 })
