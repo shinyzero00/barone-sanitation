@@ -10,6 +10,7 @@ export const router = createRouter({
     { path: '/:mode(login|register|reset)', name: 'auth', component: () => import('./views/AuthView.vue') },
     { path: '/bookings', name: 'bookings', component: () => import('./views/BookingsView.vue'), meta: { protected: true } },
     { path: '/bookings/:id', name: 'booking', component: () => import('./views/BookingView.vue'), meta: { protected: true } },
+    { path: '/reserve', name: 'reserve', component: () => import('./views/ReserveView.vue'), meta: { role: 'client' } },
     { path: '/:pathMatch(.*)*', component: { template: '<h1>Страница не найдена</h1><a href="/">В каталог</a>' } },
   ],
 })

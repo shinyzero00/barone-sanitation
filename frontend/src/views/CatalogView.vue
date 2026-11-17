@@ -47,7 +47,7 @@ void load()
         <li v-for="type in available" :key="type.consultation_type_id">
           <div class="stack"><h3>{{ type.title }}</h3><p>{{ type.description }}</p></div>
           <span class="terms">{{ type.duration_minutes }} мин. · {{ price(type.price) }}</span>
-          <RouterLink v-if="$router.hasRoute('reserve')" class="button" :aria-label="`Записаться: ${type.title}`" :to="{ name: 'reserve', query: { type: type.consultation_type_id, consultant: person?.consultant_id } }">Записаться</RouterLink>
+          <RouterLink class="button" :aria-label="`Записаться: ${type.title}`" :to="{ name: 'reserve', query: { type: type.consultation_type_id, consultant: person?.consultant_id } }">Записаться</RouterLink>
         </li>
       </ul>
     </section>
