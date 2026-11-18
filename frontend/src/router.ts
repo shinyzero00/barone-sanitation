@@ -12,6 +12,7 @@ export const router = createRouter({
     { path: '/bookings/:id', name: 'booking', component: () => import('./views/BookingView.vue'), meta: { protected: true } },
     { path: '/reserve', name: 'reserve', component: () => import('./views/ReserveView.vue'), meta: { role: 'client' } },
     { path: '/profile', name: 'profile', component: () => import('./views/ProfileView.vue'), meta: { protected: true } },
+    { path: '/admin', name: 'admin', component: () => import('./views/AdminView.vue'), meta: { role: 'admin' } },
     { path: '/:pathMatch(.*)*', component: { template: '<h1>Страница не найдена</h1><a href="/">В каталог</a>' } },
   ],
 })
