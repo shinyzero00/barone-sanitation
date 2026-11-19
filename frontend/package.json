@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "api:generate": "node scripts/generate-api.mjs"
+    "api:generate": "node scripts/generate-api.mjs",
+    "test:smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
     "openapi-fetch": "^0.14.0",
@@ -16,7 +17,9 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@vitejs/plugin-vue": "^5.2.4",
+    "axe-core": "^4.14.1",
     "openapi-typescript": "^7.9.1",
+    "prettier": "^3.10.1",
     "sass": "^1.89.2",
     "typescript": "~5.8.3",
     "vite": "^6.4.0",
