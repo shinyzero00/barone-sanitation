@@ -175,7 +175,7 @@ func registerHTTPOperations(api huma.API, s *Service) {
 	type resetPassword struct {
 		Email    string `json:"email"`
 		Code     string `json:"code" pattern:"^[0-9]{6}$" writeOnly:"true"`
-		Password string `json:"password" writeOnly:"true" doc:"New password, 12-128 bytes (validated by the service)."`
+		Password string `json:"password" writeOnly:"true" doc:"New password, 12-128 Unicode code points."`
 	}
 	httpRegister(api, operation("POST", "/api/v1/auth/reset-password", "resetPassword", "Reset password", "Authentication", 204), false,
 		func(ctx context.Context, in *HTTPBody[resetPassword]) (*struct{}, error) {

@@ -25,7 +25,7 @@ func hashPassword(password string) (string, error) {
 }
 
 func checkPassword(encoded, password string) bool {
-	if !validPassword(password) {
+	if !validLoginPassword(password) {
 		return false
 	}
 	parts := strings.Split(encoded, "$")

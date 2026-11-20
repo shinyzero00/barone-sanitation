@@ -18,7 +18,7 @@ import (
 type RegisterInput struct {
 	Name     string `json:"name"`
 	Email    string `json:"email"`
-	Password string `json:"password" writeOnly:"true" doc:"12-128 bytes, validated by the service."`
+	Password string `json:"password" writeOnly:"true" doc:"12-128 Unicode code points."`
 	Phone    string `json:"phone"`
 }
 
@@ -37,7 +37,15 @@ func canonicalEmail(email string) (string, error) {
 	return email, nil
 }
 
-func validPassword(password string) bool { return len(password) >= 12 && len(password) <= 128 }
+const maxPasswordLength = 128
+
+func validLoginPassword(password string) bool {
+	return password != "" && utf8.ValidString(password) && utf8.RuneCountInString(password) <= maxPasswordLength
+}
+
+func validPassword(password string) bool {
+	return validLoginPassword(password) && utf8.RuneCountInString(password) >= 12
+}
 
 func validText(s string, max int) bool {
 	return utf8.ValidString(s) && len(s) > 0 && utf8.RuneCountInString(s) <= max && !strings.ContainsFunc(s, unicode.IsControl)
@@ -246,7 +254,10 @@ func (s *Service) register(ctx context.Context, in RegisterInput, ip string) (in
 		return 0, codeTiming{}, err
 	}
 	in.Name, in.Phone = strings.TrimSpace(in.Name), strings.TrimSpace(in.Phone)
-	if !validText(in.Name, 200) || !validText(in.Phone, 40) || !validPassword(in.Password) {
+	if !validPassword(in.Password) {
+		return 0, codeTiming{}, problem(422, "invalid_password")
+	}
+	if !validText(in.Name, 200) || !validText(in.Phone, 40) {
 		return 0, codeTiming{}, problem(422, "invalid_registration")
 	}
 	for _, r := range in.Phone {
@@ -338,7 +349,7 @@ func (s *Service) startLogin(ctx context.Context, email, password, ip string) (s
 	if err != nil {
 		return "", codeTiming{}, err
 	}
-	if !validPassword(password) {
+	if !validLoginPassword(password) {
 		return "", codeTiming{}, problem(401, "invalid_credentials")
 	}
 	if err = s.RateLimit(ctx, ip, "login"); err != nil {

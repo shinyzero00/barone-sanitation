@@ -101,8 +101,8 @@ func TestAuthInputValidation(t *testing.T) {
 			}
 		})
 	}
-	if validPassword(strings.Repeat("x", 129)) || validPassword("12345678901") || !validPassword(strings.Repeat("x", 128)) {
-		t.Fatal("password byte bounds")
+	if validPassword(strings.Repeat("я", 129)) || validPassword(strings.Repeat("я", 11)) || !validPassword(strings.Repeat("😀", 128)) {
+		t.Fatal("password character bounds")
 	}
 }
 
