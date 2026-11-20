@@ -55,6 +55,10 @@ func commandFailure(step, reason string, err error) error {
 				reason = "PostgreSQL permission denied"
 			case "42P01":
 				reason = "PostgreSQL table is missing; check migration state"
+			case "42703":
+				reason = "PostgreSQL column is missing; check pending migrations and schema history"
+			case "42701":
+				reason = "PostgreSQL column already exists; check schema against migration history"
 			default:
 				reason = "PostgreSQL reported an error"
 			}

@@ -28,6 +28,8 @@ func TestCommandFailure(t *testing.T) {
 			Failed: &goose.MigrationResult{Source: &goose.Source{Version: 7, Path: secret}}, Err: permission,
 		}},
 		{"unknown", "admin", "admin: fallback", errors.New(secret)},
+		{"missing_column", "seed demo", "seed demo: PostgreSQL column is missing; check pending migrations and schema history (SQLSTATE 42703)", &pgconn.PgError{Code: "42703", Message: secret}},
+		{"duplicate_column", "migrate up", "migrate up: PostgreSQL column already exists; check schema against migration history (SQLSTATE 42701)", &pgconn.PgError{Code: "42701", Message: secret}},
 		{"invalid_sqlstate", "migrate up", "migrate up: PostgreSQL reported an error", &pgconn.PgError{Code: "bad\n!", Message: secret}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
