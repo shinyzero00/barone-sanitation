@@ -222,7 +222,8 @@ func TestHTTPBodyLimit(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			client := &http.Client{Timeout: 2 * time.Second}
+			request.Header.Set("Expect", "100-continue")
+			client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{ExpectContinueTimeout: time.Second, DisableKeepAlives: true}}
 			response, err := client.Do(request)
 			if err != nil {
 				t.Fatal(err)
