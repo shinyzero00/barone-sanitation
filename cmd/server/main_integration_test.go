@@ -11,12 +11,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/jpeg"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -125,6 +128,48 @@ func TestServerMigrationsAndAdmin(t *testing.T) {
 		t.Fatal("migrate up after rollback failed")
 	}
 	version(8)
+}
+
+func TestDemoSeed(t *testing.T) {
+	db := serverTestDatabase(t)
+	for _, args := range [][]string{{"migrate", "up"}, {"seed", "demo"}} {
+		if err := run(args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(wantTypes, wantPeople, wantOfferings, wantIntervals, wantBlobs int) {
+		t.Helper()
+		var types, people, offerings, intervals, blobs int
+		err := db.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM consultation_types),
+			(SELECT count(*) FROM consultants), (SELECT count(*) FROM consultation_offerings),
+			(SELECT count(*) FROM work_intervals WHERE starts_at > now()), (SELECT count(*) FROM blobs)`).Scan(&types, &people, &offerings, &intervals, &blobs)
+		if err != nil || types != wantTypes || people != wantPeople || offerings != wantOfferings || intervals != wantIntervals || blobs != wantBlobs {
+			t.Fatalf("seed counts types=%d consultants=%d offerings=%d intervals=%d blobs=%d: %v", types, people, offerings, intervals, blobs, err)
+		}
+	}
+	check(5, 3, 6, 30, 0)
+	var id string
+	if err := db.QueryRowContext(t.Context(), `SELECT min(consultant_id)::text FROM consultants`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	var photo bytes.Buffer
+	if err := jpeg.Encode(&photo, image.NewRGBA(image.Rect(0, 0, 2, 2)), nil); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "avatar.jpg")
+	if err := os.WriteFile(path, photo.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"avatar", id, path}, {"avatar", id, path}, {"seed", "demo"}} {
+		if err := run(args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check(5, 3, 6, 30, 1)
+	var stored []byte
+	if err := db.QueryRowContext(t.Context(), `SELECT b.data FROM consultants c JOIN blobs b ON b.blob_id=c.avatar_blob_id WHERE c.consultant_id=$1::text::bigint`, id).Scan(&stored); err != nil || !bytes.Equal(stored, photo.Bytes()) {
+		t.Fatalf("seed did not preserve imported photo: %v", err)
+	}
 }
 
 // Keep Fiber's startup banner bounded and private, including on failure.

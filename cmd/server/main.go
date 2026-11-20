@@ -14,6 +14,7 @@ import (
 
 	"github.com/shinyzero00/barone-sanitation/internal/backend"
 	"github.com/shinyzero00/barone-sanitation/internal/migrations"
+	"github.com/shinyzero00/barone-sanitation/internal/seed"
 )
 
 func main() {
@@ -29,8 +30,9 @@ func run(args []string) error {
 	}
 	mode := args[0]
 	valid := mode == "serve" && len(args) == 1 || mode == "migrate" && len(args) == 2 && (args[1] == "up" || args[1] == "down") || mode == "admin" && len(args) == 2 || mode == "avatar" && len(args) == 3
+	valid = valid || mode == "seed" && len(args) == 2 && args[1] == "demo"
 	if !valid {
-		fmt.Fprintln(os.Stderr, "usage: server [serve | migrate up|down | admin EMAIL | avatar CONSULTANT_ID FILE]")
+		fmt.Fprintln(os.Stderr, "usage: server [serve | migrate up|down | admin EMAIL | avatar CONSULTANT_ID FILE | seed demo]")
 		return errors.New("invalid arguments")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -54,6 +56,18 @@ func run(args []string) error {
 		return commandFailure("database connection", "could not connect to PostgreSQL; check DATABASE_URL and server availability", err)
 	}
 	defer db.Close()
+	if mode == "seed" {
+		seedCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if err := seed.Demo(seedCtx, db); err != nil {
+			if errors.Is(err, seed.ErrCatalogNotEmpty) {
+				return err
+			}
+			return commandFailure("seed demo", "could not seed demo data; check migrations and embedded images", err)
+		}
+		slog.Info("demo seed completed")
+		return nil
+	}
 	if mode == "avatar" {
 		return importAvatar(ctx, db, args[1], args[2])
 	}
