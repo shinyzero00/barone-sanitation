@@ -794,7 +794,7 @@ export interface components {
         RegisterInput: {
             email: string;
             name: string;
-            /** @description 12-128 bytes, validated by the service. */
+            /** @description 12-128 Unicode code points. */
             password: string;
             phone: string;
         };
@@ -810,7 +810,7 @@ export interface components {
         ResetPassword: {
             code: string;
             email: string;
-            /** @description New password, 12-128 bytes (validated by the service). */
+            /** @description New password, 12-128 Unicode code points. */
             password: string;
         };
         SetOffering: {

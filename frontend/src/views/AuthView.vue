@@ -46,7 +46,13 @@ const purpose = computed(() =>
     : ("verify_email" as const),
 );
 
+function validateNewPassword(value: string) {
+  const length = [...value].length;
+  if (length < 12 || length > 128) throw new Error("Пароль должен содержать от 12 до 128 символов.");
+}
+
 async function issue(resend = false) {
+  if (mode.value === "register" && !resend) validateNewPassword(password.value);
   const result =
     mode.value === "login"
       ? await api.POST("/api/v1/auth/login", {
@@ -82,6 +88,7 @@ async function issue(resend = false) {
 }
 
 async function verify() {
+  if (mode.value === "reset") validateNewPassword(newPassword.value);
   const body = { email: email.value, code: code.value };
   if (mode.value === "login") {
     unwrap(await api.POST("/api/v1/auth/login/verify", { body }));
@@ -184,12 +191,10 @@ async function run(action: () => Promise<void>) {
           v-model="password"
           type="password"
           required
-          :minlength="mode === 'register' ? 12 : undefined"
           :autocomplete="
             mode === 'register' ? 'new-password' : 'current-password'
           "
       /></label>
-      <p v-if="mode === 'register'">От 12 до 128 байт.</p>
       <div class="inline">
         <button :disabled="busy || wait > 0">
           {{ mode === "login" ? "Продолжить" : "Получить код" }}</button
@@ -216,7 +221,6 @@ async function run(action: () => Promise<void>) {
           v-model="newPassword"
           type="password"
           required
-          minlength="12"
           autocomplete="new-password"
       /></label>
       <div class="inline">

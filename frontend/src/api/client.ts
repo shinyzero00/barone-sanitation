@@ -9,6 +9,7 @@ const messages: Record<string, string> = {
   invalid_code: 'Код неверен, истёк или больше не действует.', code_locked: 'Попытки исчерпаны. Запросите новый код после паузы.',
   code_cooldown: 'Новый код пока нельзя запросить.', rate_limited: 'Слишком много запросов. Повторите позже.',
   invalid_request: 'Проверьте заполнение полей.', booking_overlap: 'Это время уже занято.',
+  invalid_password: 'Пароль должен содержать от 12 до 128 символов.',
   outside_work_interval: 'Это время больше недоступно.', inactive_offering: 'Услуга больше недоступна.',
   consultation_result_exists: 'Заключение уже сохранено.', mail_unavailable: 'Не удалось отправить письмо. Повторите отправку позже.',
   invalid_transition: 'Статус уже изменился или переход недоступен.', invalid_phone: 'Проверьте номер телефона.',
