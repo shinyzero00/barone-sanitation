@@ -414,9 +414,6 @@ select:focus-visible {
   cursor: pointer;
   font-weight: 700;
 }
-.button:hover:not(:disabled) {
-  background: #6d2525;
-}
 button:disabled {
   cursor: not-allowed;
   opacity: 0.55;

@@ -820,16 +820,10 @@ button:focus-visible {
   cursor: pointer;
   font-weight: 700;
 }
-.button:hover:not(:disabled) {
-  background: #6d2525;
-}
 .button-secondary {
   border-color: #21332b;
   background: transparent;
   color: #21332b;
-}
-.button-secondary:hover:not(:disabled) {
-  background: #e5e0d0;
 }
 .button-small {
   min-height: 2.2rem;
