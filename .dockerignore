@@ -1,0 +1,17 @@
+.git
+.env*
+**/.env*
+.tls
+**/.tls
+**/node_modules
+**/dist
+**/.artifacts
+**/*.key
+**/*.pem
+/bin
+/server
+*.test
+coverage.out
+opencode.json
+barone-sanitation-frontend.md
+makefile
