@@ -59,14 +59,14 @@ type HTTPTimeRange struct {
 	To   time.Time `query:"to" required:"true"`
 }
 
-func registerHTTPOperations(api huma.API, s *Service) {
-	operation := func(method, path, id, summary, tag string, status int) huma.Operation {
-		return huma.Operation{
-			Method: method, Path: path, OperationID: id,
-			Summary: summary, Tags: []string{tag}, DefaultStatus: status,
-		}
+func operation(method, path, id, summary, tag string, status int) huma.Operation {
+	return huma.Operation{
+		Method: method, Path: path, OperationID: id,
+		Summary: summary, Tags: []string{tag}, DefaultStatus: status,
 	}
+}
 
+func registerHTTPOperations(api huma.API, s *Service) {
 	type health struct {
 		Status string `json:"status"`
 	}

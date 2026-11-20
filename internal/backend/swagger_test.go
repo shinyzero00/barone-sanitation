@@ -93,7 +93,11 @@ func TestSwaggerRouteCoverage(t *testing.T) {
 			for status := range responses {
 				if strings.HasPrefix(status, "2") {
 					hasSuccess = true
-					if status != "204" {
+					if path == "/api/v1/blobs/{id}" {
+						for _, format := range []string{"image/jpeg", "image/png", "image/webp"} {
+							swaggerObject(t, doc, "paths", path, method, "responses", status, "content", format, "schema")
+						}
+					} else if status != "204" {
 						swaggerObject(t, doc, "paths", path, method, "responses", status, "content", "application/json", "schema")
 					}
 				}
@@ -102,7 +106,11 @@ func TestSwaggerRouteCoverage(t *testing.T) {
 				t.Errorf("%s: no success response", id)
 			}
 			if op["requestBody"] != nil {
-				swaggerObject(t, doc, "paths", path, method, "requestBody", "content", "application/json", "schema")
+				format := "application/json"
+				if path == avatarUploadPath && method == "put" {
+					format = avatarUploadType
+				}
+				swaggerObject(t, doc, "paths", path, method, "requestBody", "content", format, "schema")
 			}
 			// Public endpoints are the small exception to cookie authentication.
 			scheme := "Session"
@@ -110,7 +118,7 @@ func TestSwaggerRouteCoverage(t *testing.T) {
 			case path == "/api/v1/auth/login/verify":
 				scheme = "LoginChallenge"
 			case path == "/healthz", path == "/csrf", path == "/api/v1/config", strings.HasPrefix(path, "/api/v1/auth/") && path != "/api/v1/auth/logout",
-				method == "get" && (path == "/api/v1/consultants" || path == "/api/v1/consultation-types" || path == "/api/v1/offerings" || strings.HasSuffix(path, "/slots")):
+				method == "get" && (path == "/api/v1/blobs/{id}" || path == "/api/v1/consultants" || path == "/api/v1/consultation-types" || path == "/api/v1/offerings" || strings.HasSuffix(path, "/slots")):
 				scheme = ""
 			}
 			security, _ := op["security"].([]any)

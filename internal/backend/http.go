@@ -43,7 +43,7 @@ func NewApp(s *Service) *fiber.App {
 		timeout = 10 * time.Second
 	}
 	app := fiber.New(fiber.Config{
-		BodyLimit: httpBodyLimit, ReadTimeout: timeout, WriteTimeout: timeout,
+		BodyLimit: AvatarMaxBytes, ReadTimeout: timeout, WriteTimeout: timeout,
 		ErrorHandler: func(c fiber.Ctx, err error) error {
 			httpSecurityHeaders(c, s.Config.PublicOrigin)
 			return httpError(c, err)
@@ -61,6 +61,10 @@ func NewApp(s *Service) *fiber.App {
 		return errors.New("http panic")
 	}}))
 	app.Use(func(c fiber.Ctx) error {
+		avatarUpload := c.Method() == "PUT" && c.Path() == avatarUploadPath
+		if !avatarUpload && len(c.Request().Body()) > httpBodyLimit {
+			return problem(413, "request_too_large")
+		}
 		if httpUnsafe(c.Method()) {
 			if s.Config.PublicOrigin == "" || c.Get("Origin") != s.Config.PublicOrigin {
 				return problem(403, "invalid_origin")
@@ -69,7 +73,17 @@ func NewApp(s *Service) *fiber.App {
 			if !httpValidCSRF(s.Config.HMACSecret, cookie) || subtle.ConstantTimeCompare([]byte(cookie), []byte(token)) != 1 {
 				return problem(403, "invalid_csrf")
 			}
+			if avatarUpload {
+				mediaType, _, err := mime.ParseMediaType(c.Get("Content-Type"))
+				if err != nil || mediaType != avatarUploadType || c.Get("Content-Encoding") != "" {
+					return problem(415, "avatar_binary_required")
+				}
+				return c.Next()
+			}
 			if len(c.Body()) > 0 {
+				if len(c.Body()) > httpBodyLimit {
+					return problem(413, "request_too_large")
+				}
 				mediaType, _, err := mime.ParseMediaType(c.Get("Content-Type"))
 				if err != nil || mediaType != "application/json" {
 					return problem(415, "application_json_required")
@@ -92,6 +106,7 @@ func NewApp(s *Service) *fiber.App {
 	})
 	api := newHTTPAPI(app, s)
 	registerHTTPOperations(api, s)
+	registerBlobOperations(api, s)
 	apidocs.Register(app)
 	app.Use(func(fiber.Ctx) error { return problem(404, "not_found") })
 	return app

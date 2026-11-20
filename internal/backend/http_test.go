@@ -210,25 +210,35 @@ func TestHTTPBodyLimit(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	request, err := http.NewRequest("POST", "http://"+listener.Addr().String()+"/api/v1/auth/register", strings.NewReader(strings.Repeat("a", httpBodyLimit+1)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := &http.Client{Timeout: 2 * time.Second}
-	response, err := client.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if response.StatusCode != 413 || string(body) != `{"error":"request_too_large"}` {
-		t.Fatalf("oversized request: status %d body %s", response.StatusCode, body)
-	}
-	if response.Header.Get("Strict-Transport-Security") == "" {
-		t.Fatal("server-level error lost security headers")
+	for _, tc := range []struct {
+		method, path string
+		limit        int
+	}{
+		{"POST", "/api/v1/auth/register", httpBodyLimit},
+		{"PUT", avatarUploadPath, AvatarMaxBytes},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			request, err := http.NewRequest(tc.method, "http://"+listener.Addr().String()+tc.path, strings.NewReader(strings.Repeat("a", tc.limit+1)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := &http.Client{Timeout: 2 * time.Second}
+			response, err := client.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != 413 || string(body) != `{"error":"request_too_large"}` {
+				t.Fatalf("oversized request: status %d body %s", response.StatusCode, body)
+			}
+			if response.Header.Get("Strict-Transport-Security") == "" {
+				t.Fatal("server-level error lost security headers")
+			}
+		})
 	}
 }
 

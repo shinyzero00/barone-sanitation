@@ -28,8 +28,9 @@ func run(args []string) error {
 		args = []string{"serve"}
 	}
 	mode := args[0]
-	if mode != "serve" && mode != "migrate" && mode != "admin" || mode == "serve" && len(args) != 1 || mode == "migrate" && (len(args) != 2 || args[1] != "up" && args[1] != "down") || mode == "admin" && len(args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: server [serve | migrate up|down | admin EMAIL]")
+	valid := mode == "serve" && len(args) == 1 || mode == "migrate" && len(args) == 2 && (args[1] == "up" || args[1] == "down") || mode == "admin" && len(args) == 2 || mode == "avatar" && len(args) == 3
+	if !valid {
+		fmt.Fprintln(os.Stderr, "usage: server [serve | migrate up|down | admin EMAIL | avatar CONSULTANT_ID FILE]")
 		return errors.New("invalid arguments")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -53,6 +54,9 @@ func run(args []string) error {
 		return commandFailure("database connection", "could not connect to PostgreSQL; check DATABASE_URL and server availability", err)
 	}
 	defer db.Close()
+	if mode == "avatar" {
+		return importAvatar(ctx, db, args[1], args[2])
+	}
 	if mode == "migrate" {
 		migrationCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()

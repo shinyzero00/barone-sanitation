@@ -23,6 +23,7 @@ type Booking struct {
 	ConsultationTitle string    `db:"consultation_title" json:"consultation_title"`
 	ConsultantName    string    `db:"consultant_name" json:"consultant_name"`
 	ClientName        string    `db:"client_name" json:"client_name"`
+	ClientAvatarURL   *string   `db:"client_avatar_url" json:"client_avatar_url"`
 	AddressLine       *string   `db:"address_line" json:"address_line" doc:"Current address text; null if no address was selected."`
 }
 
@@ -34,7 +35,8 @@ type BookingInput struct {
 
 const bookingSelect = `SELECT b.consultation_booking_id,b.client_id,b.consultation_offering_id,b.client_address_id,
 	o.consultant_id,o.consultation_type_id,b.starts_at,b.ends_at,b.created_at,s.status,t.price::text AS price,t.duration_minutes,
-	t.title AS consultation_title,ku.name AS consultant_name,cu.name AS client_name,a.address_line
+	t.title AS consultation_title,ku.name AS consultant_name,cu.name AS client_name,a.address_line,
+	CASE WHEN c.user_id=$1 OR $2='admin' THEN '/api/v1/blobs/' || c.avatar_blob_id END AS client_avatar_url
 	FROM consultation_bookings b JOIN consultation_offerings o USING(consultation_offering_id)
 	JOIN consultation_types t USING(consultation_type_id) JOIN clients c USING(client_id)
 	JOIN consultants k ON k.consultant_id=o.consultant_id
@@ -139,7 +141,7 @@ func (s *Service) CreateBooking(ctx context.Context, actor Actor, in BookingInpu
 		if err := domainAppendEvent(ctx, tx, id, actor.UserID, "pending", nil); err != nil {
 			return err
 		}
-		return tx.GetContext(ctx, &result, bookingSelect+` WHERE b.consultation_booking_id=$1`, id)
+		return tx.GetContext(ctx, &result, bookingSelect+` WHERE b.consultation_booking_id=$3`, actor.UserID, role, id)
 	})
 	return result, err
 }
@@ -184,7 +186,7 @@ func (s *Service) ChangeBookingStatus(ctx context.Context, actor Actor, id int64
 		if err := tx.GetContext(ctx, &locked, `SELECT consultation_booking_id FROM consultation_bookings WHERE consultation_booking_id=$1 FOR UPDATE`, id); err != nil {
 			return err
 		}
-		if err := tx.GetContext(ctx, &result, bookingSelect+` WHERE b.consultation_booking_id=$1`, id); err != nil {
+		if err := tx.GetContext(ctx, &result, bookingSelect+` WHERE b.consultation_booking_id=$3`, actor.UserID, role, id); err != nil {
 			return err
 		}
 		allowed := result.Status == "pending" && (status == "confirmed" || status == "cancelled") || result.Status == "confirmed" && (status == "completed" || status == "cancelled" || status == "no_show")

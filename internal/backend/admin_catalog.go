@@ -27,7 +27,7 @@ func adminList[T any](ctx context.Context, s *Service, actor Actor, query string
 }
 
 func (s *Service) ListAdminConsultants(ctx context.Context, actor Actor, limit, offset int) ([]Consultant, error) {
-	return adminList[Consultant](ctx, s, actor, `SELECT c.consultant_id,c.user_id,u.name,c.bio,c.is_active FROM consultants c JOIN users u USING(user_id) ORDER BY c.consultant_id`, limit, offset)
+	return adminList[Consultant](ctx, s, actor, consultantSelect+` ORDER BY c.consultant_id`, limit, offset)
 }
 
 func (s *Service) ListAdminConsultationTypes(ctx context.Context, actor Actor, limit, offset int) ([]ConsultationType, error) {

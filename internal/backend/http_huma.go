@@ -111,7 +111,7 @@ func newHTTPAPI(app *fiber.App, s *Service) huma.API {
 				}
 			}
 		}
-		if body := ctx.Operation().RequestBody; body != nil && body.Required {
+		if body := ctx.Operation().RequestBody; body != nil && body.Required && body.Content[avatarUploadType] == nil {
 			mediaType, _, err := mime.ParseMediaType(ctx.Header("Content-Type"))
 			if err != nil || mediaType != "application/json" {
 				_ = httpError(humafiber.Unwrap(ctx), problem(415, "application_json_required"))
@@ -131,7 +131,9 @@ func newHTTPAPI(app *fiber.App, s *Service) huma.API {
 }
 
 func httpRegister[I, O any](api huma.API, op huma.Operation, protected bool, fn func(context.Context, *I) (*O, error)) {
-	op.MaxBodyBytes = httpBodyLimit
+	if op.MaxBodyBytes == 0 {
+		op.MaxBodyBytes = httpBodyLimit
+	}
 	op.Errors = []int{400, 401, 403, 404, 409, 413, 415, 422, 429, 500, 503}
 	if protected {
 		op.Security = []map[string][]string{{"Session": {}}}

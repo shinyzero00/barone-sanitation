@@ -83,6 +83,7 @@ type Profile struct {
 	Phone        *string `db:"phone" json:"phone"`
 	ConsultantID *int64  `db:"consultant_id" json:"consultant_id"`
 	Bio          *string `db:"bio" json:"bio"`
+	AvatarURL    *string `db:"avatar_url" json:"avatar_url"`
 }
 
 type ProfileUpdate struct {
@@ -91,7 +92,8 @@ type ProfileUpdate struct {
 	Bio   *string `json:"bio" required:"false" maxLength:"10000"`
 }
 
-const profileSelect = `SELECT u.user_id,u.email,u.name,u.role,c.client_id,c.phone,k.consultant_id,k.bio
+const profileSelect = `SELECT u.user_id,u.email,u.name,u.role,c.client_id,c.phone,k.consultant_id,k.bio,
+	'/api/v1/blobs/' || CASE WHEN u.role='consultant' THEN k.avatar_blob_id ELSE c.avatar_blob_id END AS avatar_url
 	FROM users u LEFT JOIN clients c USING(user_id) LEFT JOIN consultants k USING(user_id) WHERE u.user_id=$1`
 
 func (s *Service) GetProfile(ctx context.Context, actor Actor) (Profile, error) {
@@ -209,16 +211,20 @@ func (s *Service) DeleteAddress(ctx context.Context, actor Actor, id int64) erro
 }
 
 type Consultant struct {
-	ID     int64   `db:"consultant_id" json:"consultant_id"`
-	UserID int64   `db:"user_id" json:"user_id"`
-	Name   string  `db:"name" json:"name"`
-	Bio    *string `db:"bio" json:"bio"`
-	Active bool    `db:"is_active" json:"is_active"`
+	ID        int64   `db:"consultant_id" json:"consultant_id"`
+	UserID    int64   `db:"user_id" json:"user_id"`
+	Name      string  `db:"name" json:"name"`
+	Bio       *string `db:"bio" json:"bio"`
+	Active    bool    `db:"is_active" json:"is_active"`
+	AvatarURL *string `db:"avatar_url" json:"avatar_url"`
 }
+
+const consultantSelect = `SELECT c.consultant_id,c.user_id,u.name,c.bio,c.is_active,
+	'/api/v1/blobs/' || c.avatar_blob_id AS avatar_url FROM consultants c JOIN users u USING(user_id)`
 
 func (s *Service) ListConsultants(ctx context.Context) ([]Consultant, error) {
 	result := []Consultant{}
-	err := s.DB.SelectContext(ctx, &result, `SELECT c.consultant_id,c.user_id,u.name,c.bio,c.is_active FROM consultants c JOIN users u USING(user_id) WHERE c.is_active ORDER BY c.consultant_id`)
+	err := s.DB.SelectContext(ctx, &result, consultantSelect+` WHERE c.is_active ORDER BY c.consultant_id`)
 	return result, domainError(err)
 }
 
@@ -242,7 +248,7 @@ func (s *Service) ProvisionConsultant(ctx context.Context, actor Actor, userID i
 		if err := tx.GetContext(ctx, &c.ID, `INSERT INTO consultants(user_id,bio) VALUES($1,$2) RETURNING consultant_id`, userID, bio); err != nil {
 			return err
 		}
-		return tx.GetContext(ctx, &c, `SELECT c.consultant_id,c.user_id,u.name,c.bio,c.is_active FROM consultants c JOIN users u USING(user_id) WHERE c.consultant_id=$1`, c.ID)
+		return tx.GetContext(ctx, &c, consultantSelect+` WHERE c.consultant_id=$1`, c.ID)
 	}, userID)
 	return c, err
 }
