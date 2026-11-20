@@ -5,7 +5,7 @@
 | `DATABASE_URL` | Required | PostgreSQL connection URL. |
 | `LISTEN_ADDRESS` | `127.0.0.1:8080` | Backend HTTP listener behind an HTTPS proxy. |
 | `PUBLIC_ORIGIN` | `https://localhost:8080` | Exact browser-facing HTTPS origin, without a path or trailing slash. |
-| `OTP_HMAC_SECRET` | Required | Base64 encoding of at least 32 random bytes; shared across instances. |
+| `OTP_HMAC_SECRET` | Required | Base64 encoding of at least 32 random bytes. Generate with `openssl rand -base64 32` and use the same value across instances. |
 | `OTP_TTL` | `10m` | Email code and login-challenge lifetime. |
 | `OTP_MAX_ATTEMPTS` | `5` | Maximum failed code checks. |
 | `OTP_RESEND_INTERVAL` | `1m` | Code regeneration cooldown. |
