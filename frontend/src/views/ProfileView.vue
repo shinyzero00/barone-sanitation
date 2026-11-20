@@ -3,6 +3,7 @@ import { onMounted, reactive, ref } from "vue";
 import type { components } from "../api/schema";
 import { api, unwrap } from "../api/client";
 import { useAccount } from "../stores/account";
+import PersonAvatar from "../components/PersonAvatar.vue";
 
 type Profile = components["schemas"]["Profile"];
 type Address = components["schemas"]["Address"];
@@ -18,6 +19,35 @@ const loading = ref(true);
 const saving = ref(false);
 const error = ref("");
 const notice = ref("");
+const avatarFile = ref<File>();
+const avatarInput = ref<HTMLInputElement>();
+
+async function saveAvatar(remove: boolean) {
+  if (saving.value || (!remove && !avatarFile.value)) return;
+  saving.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    if (remove) {
+      unwrap(await api.DELETE("/api/v1/me/avatar"));
+    } else if (avatarFile.value) {
+      if (avatarFile.value.size > 2 * 1024 * 1024) throw new Error("Максимальный размер аватара: 2 МиБ.");
+      unwrap(await api.PUT("/api/v1/me/avatar", {
+        body: avatarFile.value,
+        bodySerializer: file => file,
+        headers: { "Content-Type": "application/octet-stream" },
+      }));
+    }
+    avatarFile.value = undefined;
+    if (avatarInput.value) avatarInput.value.value = "";
+    await account.refresh();
+    notice.value = remove ? "Аватар удалён." : "Аватар сохранён.";
+  } catch (reason) {
+    showError(reason);
+  } finally {
+    saving.value = false;
+  }
+}
 
 function showError(reason: unknown) {
   error.value =
@@ -162,6 +192,18 @@ onMounted(load);
           <p class="eyebrow">01 / данные</p>
           <h2>Личная информация</h2>
         </div>
+        <PersonAvatar v-if="account.profile" class="portrait" :name="account.profile.name" :src="account.profile.avatar_url" />
+        <form v-if="account.profile?.role === 'client'" class="stack" @submit.prevent="saveAvatar(false)">
+          <label>Фото профиля
+            <input ref="avatarInput" type="file" accept="image/jpeg,image/png,image/webp" :disabled="saving"
+              @change="avatarFile = ($event.target as HTMLInputElement).files?.[0]" />
+          </label>
+          <p class="muted">JPEG, PNG или WebP, не более 2 МиБ. Фото видно вам и администратору.</p>
+          <div class="inline">
+            <button type="submit" :disabled="saving || !avatarFile">Загрузить фото</button>
+            <button v-if="account.profile.avatar_url" type="button" class="button secondary" :disabled="saving" @click="saveAvatar(true)">Удалить фото</button>
+          </div>
+        </form>
         <form class="stack" @submit.prevent="saveProfile">
           <label>Электронная почта<input :value="account.profile?.email" type="email" readonly /></label>
           <label>Имя<input v-model="form.name" required /></label
@@ -260,6 +302,7 @@ onMounted(load);
 </template>
 
 <style scoped lang="scss">
+.portrait { --avatar-size: 5rem; font-size: 1.65rem; }
 .profile-view {
   max-width: 900px;
   margin: 0 auto;

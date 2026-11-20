@@ -4,6 +4,7 @@ import { useRoute } from "vue-router";
 import { api, unwrap } from "../api/client";
 import type { components } from "../api/schema";
 import { price } from "../display";
+import PersonAvatar from "../components/PersonAvatar.vue";
 
 type Schema = components["schemas"];
 const route = useRoute();
@@ -61,6 +62,7 @@ void load();
   </section>
   <div v-else class="stack">
     <RouterLink to="/">В каталог</RouterLink>
+    <PersonAvatar v-if="person" class="portrait" :name="person.name" :src="person.avatar_url" />
     <h1>
       {{ person?.name ?? (loading ? "Консультант" : "Консультант не найден") }}
     </h1>
@@ -103,9 +105,9 @@ void load();
       <h2 id="staff">Консультанты</h2>
       <ul class="ledger">
         <li v-for="c in people" :key="c.consultant_id">
-          <RouterLink :to="`/consultants/${c.consultant_id}`">{{
-            c.name
-          }}</RouterLink>
+          <RouterLink class="inline" :to="`/consultants/${c.consultant_id}`">
+            <PersonAvatar :name="c.name" :src="c.avatar_url" />{{ c.name }}
+          </RouterLink>
         </li>
       </ul>
     </section>
@@ -113,6 +115,7 @@ void load();
 </template>
 
 <style scoped lang="scss">
+.portrait { --avatar-size: 6rem; font-size: 2rem; }
 .hero {
   display: grid;
   grid-template-columns: 1.15fr 1fr;

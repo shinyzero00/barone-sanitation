@@ -5,6 +5,7 @@ import type { components } from "../api/schema";
 import { ApiError, api, unwrap } from "../api/client";
 import { price, dateTime, zone, statusLabel } from "../display";
 import { useAccount } from "../stores/account";
+import PersonAvatar from "../components/PersonAvatar.vue";
 
 type Booking = components["schemas"]["Booking"];
 type Event = components["schemas"]["BookingEvent"];
@@ -172,7 +173,7 @@ onMounted(load);
             </div>
             <div>
               <dt>Клиент</dt>
-              <dd>{{ booking.client_name }}</dd>
+              <dd class="inline"><PersonAvatar v-if="booking.client_avatar_url" :name="booking.client_name" :src="booking.client_avatar_url" />{{ booking.client_name }}</dd>
             </div>
             <div>
               <dt>Стоимость</dt>

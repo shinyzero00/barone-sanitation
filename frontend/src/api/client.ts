@@ -12,6 +12,8 @@ const messages: Record<string, string> = {
   outside_work_interval: 'Это время больше недоступно.', inactive_offering: 'Услуга больше недоступна.',
   consultation_result_exists: 'Заключение уже сохранено.', mail_unavailable: 'Не удалось отправить письмо. Повторите отправку позже.',
   invalid_transition: 'Статус уже изменился или переход недоступен.', invalid_phone: 'Проверьте номер телефона.',
+  invalid_avatar: 'Выберите корректный JPEG, PNG или WebP размером до 2048 × 2048 пикселей.',
+  request_too_large: 'Файл слишком большой. Максимальный размер аватара: 2 МиБ.',
 }
 
 export class ApiError extends Error {
