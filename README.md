@@ -1,4 +1,10 @@
-# Configuration
+# Barone Sanitation
+
+## Demo
+
+Run `server seed demo` after applying migrations to populate an empty catalog. See [demo details](frontend/DEV.md#demo-catalog).
+
+## Configuration
 
 | Variable | Default | Description |
 | --- | --- | --- |
