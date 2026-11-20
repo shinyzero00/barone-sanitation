@@ -4,6 +4,10 @@
 
 Run `server seed demo` after applying migrations to populate an empty catalog. See [demo details](frontend/DEV.md#demo-catalog).
 
+## Docker
+
+The [Compose stack](deploy/README.md) runs PostgreSQL, migrations, the API and Caddy with the built frontend. Use automatic Let's Encrypt certificates or mount your own for local development.
+
 ## Configuration
 
 | Variable | Default | Description |

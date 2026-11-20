@@ -1,0 +1,45 @@
+services:
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sanitation}
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  migrate:
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-sanitation}
+
+  backend:
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-sanitation}
+      OTP_PROVIDER: console
+
+  caddy:
+    cap_add: [DAC_READ_SEARCH]
+    ports: !override
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:443:443"
+      - "127.0.0.1:443:443/udp"
+    volumes:
+      - type: bind
+        source: ./deploy/caddy/Caddyfile.dev
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${TLS_CERT_FILE:-./frontend/.tls/localhost.crt}
+        target: /etc/caddy/tls/cert.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${TLS_KEY_FILE:-./frontend/.tls/localhost.key}
+        target: /etc/caddy/tls/key.pem
+        read_only: true
+        bind:
+          create_host_path: false
+
+networks:
+  database:
+    internal: false

@@ -1,0 +1,4 @@
+https://{$CADDY_DOMAIN:localhost} {
+	tls /etc/caddy/tls/cert.pem /etc/caddy/tls/key.pem
+	import /etc/caddy/routes.caddy
+}
