@@ -16,7 +16,7 @@ Run `npm run api:generate` against the running local Go backend after contract c
 
 From the repository root on a development database, run `go run ./cmd/server migrate up` and `go run ./cmd/server seed demo`. The seed requires an empty consultation catalog on the first run and adds weekday availability for the next two weeks in `America/New_York`. Demo consultants cannot sign in. `PRICE_CURRENCY=USD` displays the demo prices in dollars.
 
-The three empty `.jpg` placeholders in `internal/seed/assets/` are embedded in the Go binary and skipped until they contain images. After replacing them, rebuild the backend and rerun `seed demo` to import any missing portraits. It does not replace existing portraits or regenerate schedules. To replace a portrait already in PostgreSQL, use `go run ./cmd/server avatar CONSULTANT_ID FILE`. Images may be JPEG, PNG, or WebP, up to 2 MiB and 2048 pixels per side.
+The three portraits in `internal/seed/assets/` are embedded in the Go binary. After replacing them, rebuild the backend and rerun `seed demo` to import any missing portraits. It does not replace existing portraits or regenerate schedules. To replace a portrait already in PostgreSQL, use `server avatar CONSULTANT_ID FILE`. Images may be JPEG, PNG, or WebP, up to 2 MiB and 2048 pixels per side.
 
 ## Browser smoke test
 

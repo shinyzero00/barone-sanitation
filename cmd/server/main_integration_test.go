@@ -147,7 +147,7 @@ func TestDemoSeed(t *testing.T) {
 			t.Fatalf("seed counts types=%d consultants=%d offerings=%d intervals=%d blobs=%d: %v", types, people, offerings, intervals, blobs, err)
 		}
 	}
-	check(5, 3, 6, 30, 0)
+	check(5, 3, 6, 30, 3)
 	var id string
 	if err := db.QueryRowContext(t.Context(), `SELECT min(consultant_id)::text FROM consultants`).Scan(&id); err != nil {
 		t.Fatal(err)
@@ -165,7 +165,7 @@ func TestDemoSeed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	check(5, 3, 6, 30, 1)
+	check(5, 3, 6, 30, 3)
 	var stored []byte
 	if err := db.QueryRowContext(t.Context(), `SELECT b.data FROM consultants c JOIN blobs b ON b.blob_id=c.avatar_blob_id WHERE c.consultant_id=$1::text::bigint`, id).Scan(&stored); err != nil || !bytes.Equal(stored, photo.Bytes()) {
 		t.Fatalf("seed did not preserve imported photo: %v", err)
